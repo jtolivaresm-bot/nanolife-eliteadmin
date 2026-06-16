@@ -60,9 +60,39 @@ function toObjects(rows) {
 export const handler = async () => {
   const headers = {
     "Content-Type": "application/json",
-    "Cache-Control": "public, max-age=3600", // 1 hora
+    "Cache-Control": "public, max-age=3600",
     "Access-Control-Allow-Origin": "*",
   };
+
+  // DIAGNÓSTICO: ver qué variables hay disponibles
+  const envKeys = Object.keys(process.env).filter(k => k.startsWith("GOOGLE") || k.startsWith("NETLIFY"));
+  const keyExists = !!process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
+  const keyLength = process.env.GOOGLE_SERVICE_ACCOUNT_KEY?.length || 0;
+  const keyStart = process.env.GOOGLE_SERVICE_ACCOUNT_KEY?.slice(0, 50) || "VACÍO";
+  const sheetIdExists = !!process.env.GOOGLE_SHEET_ID;
+
+  console.log("DIAGNÓSTICO sheet-data:");
+  console.log("- Variables GOOGLE/NETLIFY:", envKeys);
+  console.log("- GOOGLE_SERVICE_ACCOUNT_KEY existe:", keyExists);
+  console.log("- GOOGLE_SERVICE_ACCOUNT_KEY length:", keyLength);
+  console.log("- GOOGLE_SERVICE_ACCOUNT_KEY inicio:", keyStart);
+  console.log("- GOOGLE_SHEET_ID existe:", sheetIdExists);
+
+  if (!keyExists) {
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
+        diagnostico: {
+          envKeys,
+          keyExists,
+          keyLength,
+          sheetIdExists,
+          mensaje: "GOOGLE_SERVICE_ACCOUNT_KEY no está disponible en process.env"
+        }
+      })
+    };
+  }
 
   try {
     const token = await getToken(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
@@ -86,6 +116,6 @@ export const handler = async () => {
     };
   } catch(err) {
     console.error("sheet-data error:", err.message);
-    return { statusCode:500, headers, body: JSON.stringify({ error: err.message }) };
+    return { statusCode:500, headers, body: JSON.stringify({ error: err.message, keyLength, keyStart }) };
   }
 };
