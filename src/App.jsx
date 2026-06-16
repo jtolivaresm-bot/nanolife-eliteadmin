@@ -119,9 +119,13 @@ function Dashboard({ onLogout }) {
 
   async function fetchData() {
     setLoading(true);
+    setError(null);
     try {
-      const r = await fetch("/.netlify/functions/sheet-data");
-      if (!r.ok) throw new Error(`Error ${r.status}`);
+      const r = await fetch("/.netlify/functions/sheet-data?t=" + Date.now());
+      if (!r.ok) {
+        const txt = await r.text();
+        throw new Error(`Error ${r.status}: ${txt}`);
+      }
       const d = await r.json();
       setData(d);
       setUpdatedAt(new Date(d.updatedAt));
