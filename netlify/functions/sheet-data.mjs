@@ -98,10 +98,12 @@ export const handler = async () => {
     const token = await getToken(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
     const sheetId = process.env.GOOGLE_SHEET_ID;
 
-    const [marcRows, ventasRows, cierresRows] = await Promise.all([
+    const [marcRows, ventasRows, cierresRows, fotosRows, audiosRows] = await Promise.all([
       readSheet(token, sheetId, "Marcaciones!A:L"),
       readSheet(token, sheetId, "Ventas!A:J"),
       readSheet(token, sheetId, "Cierres!A:H"),
+      readSheet(token, sheetId, "Fotos!A:E").catch(()=>[]),
+      readSheet(token, sheetId, "Audios!A:E").catch(()=>[]),
     ]);
 
     return {
@@ -111,6 +113,8 @@ export const handler = async () => {
         marcaciones: toObjects(marcRows),
         ventas: toObjects(ventasRows),
         cierres: toObjects(cierresRows),
+        fotos: toObjects(fotosRows),
+        audios: toObjects(audiosRows),
         updatedAt: new Date().toISOString(),
       }),
     };

@@ -360,6 +360,59 @@ function Dashboard({ onLogout }) {
             </div>
           </div>
 
+          {/* FOTOS DE GÓNDOLA */}
+          {data.fotos?.length > 0 && <>
+            <div className="sec-title">Fotos de góndola</div>
+            <div className="card">
+              <div style={{padding:16,display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:12}}>
+                {data.fotos.filter(f=>fechasFilt.includes(f["Fecha"]||"")).map((f,i)=>(
+                  <a key={i} href={f["View URL"]||f["URL"]} target="_blank" rel="noreferrer"
+                    style={{display:"block",borderRadius:12,overflow:"hidden",border:"1px solid #E2E8F0",textDecoration:"none"}}>
+                    <img src={f["URL"]} alt={f["Archivo"]}
+                      style={{width:"100%",aspectRatio:"1",objectFit:"cover",display:"block",background:"#F1F5F9"}}
+                      onError={e=>{e.target.style.display="none";}}/>
+                    <div style={{padding:"6px 8px",background:"#F8FAFC"}}>
+                      <div style={{fontSize:10,fontWeight:600,color:"#64748B",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                        {f["Archivo"]?.replace(/_/g," ").replace(".jpg","") || "—"}
+                      </div>
+                      <div style={{fontSize:10,color:"#94A3B8",marginTop:1}}>{f["Fecha"]}</div>
+                    </div>
+                  </a>
+                ))}
+              </div>
+              {data.fotos.filter(f=>fechasFilt.includes(f["Fecha"]||"")).length===0 &&
+                <div className="empty">Sin fotos para el período seleccionado</div>}
+            </div>
+          </>}
+
+          {/* AUDIOS DE CIERRE */}
+          {data.audios?.length > 0 && <>
+            <div className="sec-title">Audios de cierre</div>
+            <div className="card">
+              <div style={{padding:"8px 0"}}>
+                {data.audios.filter(f=>fechasFilt.includes(f["Fecha"]||"")).map((a,i)=>(
+                  <div key={i} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 16px",borderBottom:"1px solid #F1F5F9"}}>
+                    <div style={{width:36,height:36,borderRadius:"50%",background:"#F0FDF4",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                      <Mic size={16} color="#15803D"/>
+                    </div>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                        {a["Archivo"]?.replace(/_/g," ").replace(".webm","") || "—"}
+                      </div>
+                      <div style={{fontSize:11,color:"#94A3B8",marginTop:1}}>{a["Fecha"]} · {a["Subido"]}</div>
+                    </div>
+                    <a href={a["View URL"]||a["URL"]} target="_blank" rel="noreferrer"
+                      style={{display:"flex",alignItems:"center",gap:5,background:"#0E6F76",color:"#fff",borderRadius:8,padding:"6px 12px",fontSize:12,fontWeight:600,textDecoration:"none",flexShrink:0}}>
+                      <ExternalLink size={12}/> Escuchar
+                    </a>
+                  </div>
+                ))}
+                {data.audios.filter(f=>fechasFilt.includes(f["Fecha"]||"")).length===0 &&
+                  <div className="empty">Sin audios para el período seleccionado</div>}
+              </div>
+            </div>
+          </>}
+
           {/* DETALLE VENTAS */}
           {porPromotor.filter(p=>p.vent.length>0).length>0 && <>
             <div className="sec-title">Detalle de ventas por promotor</div>
