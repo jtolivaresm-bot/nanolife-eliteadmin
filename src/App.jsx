@@ -161,7 +161,9 @@ function Dashboard({ onLogout }) {
     if(!fechasDisponibles.length) return [];
     if(fechaSel==="hoy") return fechasDisponibles.filter(f=>f===hoyISO);
     if(fechaSel==="semana"){const h=new Date();h.setDate(h.getDate()-7);return fechasDisponibles.filter(f=>f>=h.toISOString().slice(0,10));}
-    return fechasDisponibles;
+    if(fechaSel==="todo") return fechasDisponibles;
+    // Fecha específica
+    return [fechaSel];
   },[fechaSel,fechasDisponibles,hoyISO]);
 
   const marc = useMemo(()=>data?.marcaciones.filter(r=>fechasFilt.includes(r["Fecha"]))||[],[data,fechasFilt]);
@@ -228,12 +230,19 @@ function Dashboard({ onLogout }) {
         {error&&<div style={{background:"#FEE2E2",border:"1px solid #FECACA",borderRadius:12,padding:14,marginTop:20,color:"#DC2626",display:"flex",gap:8}}><AlertCircle size={18}/>{error}</div>}
 
         {data && <>
-          {/* FILTRO FECHA */}
-          <div style={{display:"flex",alignItems:"center",gap:10,marginTop:16,flexWrap:"wrap"}}>
+          {/* FILTRO FECHA — por día específico */}
+          <div style={{display:"flex",alignItems:"center",gap:8,marginTop:16,flexWrap:"wrap"}}>
             <Calendar size={15} color="#64748B"/>
-            {[["hoy","Hoy"],["semana","Últimos 7 días"],["todo","Todo"]].map(([v,l])=>(
-              <button key={v} className={`fecha-btn ${fechaSel===v?"on":""}`} onClick={()=>setFechaSel(v)}>{l}</button>
-            ))}
+            <button className={`fecha-btn ${fechaSel==="todo"?"on":""}`} onClick={()=>setFechaSel("todo")}>Todos</button>
+            {fechasDisponibles.filter(f=>data.marcaciones.some(r=>r["Fecha"]===f)).map(f=>{
+              const d = new Date(f+"T12:00");
+              const label = isNaN(d) ? f : d.toLocaleDateString("es-CL",{weekday:"short",day:"numeric",month:"short"});
+              return (
+                <button key={f} className={`fecha-btn ${fechaSel===f?"on":""}`} onClick={()=>setFechaSel(f)}>
+                  {label}
+                </button>
+              );
+            })}
             <span style={{fontSize:12,color:"#94A3B8"}}>{marc.length} marcaciones</span>
           </div>
 
