@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import {
   Users, MapPin, ShoppingCart, Mic, RefreshCw,
   CheckCircle2, AlertCircle, TrendingUp, ChevronDown,
-  ChevronUp, ExternalLink, LogIn, LogOut, Calendar, Package
+  ChevronUp, ExternalLink, LogIn, LogOut, Calendar, Package, Store
 } from "lucide-react";
 
 const CLAVE = "nanolife2026";
@@ -163,6 +163,7 @@ function Dashboard({ onLogout }) {
   const marc = useMemo(()=>data?.marcaciones.filter(r=>fechasFilt.includes(r["Fecha"]))||[],[data,fechasFilt]);
   const vent = useMemo(()=>data?.ventas.filter(r=>fechasFilt.includes(r["Fecha"]))||[],[data,fechasFilt]);
   const cierresFilt = useMemo(()=>data?.cierres.filter(r=>fechasFilt.includes(r["Fecha"]))||[],[data,fechasFilt]);
+  const b2b = useMemo(()=>data?.ventasB2B||[],[data]);
 
   const promotores = useMemo(()=>[...new Set(marc.map(r=>r["Promotor"]))],[marc]);
   const totalUnidades = useMemo(()=>vent.reduce((s,r)=>s+parseInt(r["Unidades"]||0),0),[vent]);
@@ -371,6 +372,9 @@ function Dashboard({ onLogout }) {
             </div>
           </div>
 
+          {/* VENTAS B2B LIDER */}
+          {b2b.length > 0 && <VentasB2BSection data={b2b}/>}
+
           {/* FOTOS DE GÓNDOLA */}
           {data.fotos?.length > 0 && <>
             <div className="sec-title">Fotos de góndola</div>
@@ -479,6 +483,174 @@ function ChartsRenderer({ ventasPorProd, ventasPorProm, ready }) {
   },[ventasPorProd,ventasPorProm,ready]);
 
   return null;
+}
+
+function VentasB2BSection({ data }) {
+  const [fechaSel, setFechaSel] = useState("todas");
+
+  // Mapeo de nombres B2B → nombres limpios
+  const PROD_MAP = {
+    "LIMPIA PISO LAVANDA":  "Limpiapisos Lavanda",
+    "LIMPIA PISO SUMMER":   "Limpiapisos Summer",
+    "DETERG  PODSX10 UN":   "Detergente 10x Regular",
+    "CAPSULAS PODS HIPO":   "Detergente 10x Hipoalergénico",
+    "DETERG PODS X25 UN":   "Detergente 25x Regular",
+  };
+
+  const fechas = useMemo(()=>[...new Set(data.map(r=>r["Fecha"]).filter(Boolean))].sort().reverse(), [data]);
+  const rows = useMemo(()=>fechaSel==="todas" ? data : data.filter(r=>r["Fecha"]===fechaSel), [data, fechaSel]);
+
+  // Totales por producto
+  const porProducto = useMemo(()=>{
+    const m = {};
+    rows.forEach(r=>{
+      const prod = PROD_MAP[r["Item Desc 1"]] || r["Item Desc 1"] || "Otro";
+      if(!m[prod]) m[prod]={qty:0,sales:0};
+      m[prod].qty   += parseFloat(r["POS Qty"]||0);
+      m[prod].sales += parseFloat((r["POS Sales"]||"0").replace(/[$,]/g,""));
+    });
+    return Object.entries(m).sort((a,b)=>b[1].qty-a[1].qty);
+  },[rows]);
+
+  // Top tiendas por unidades
+  const topTiendas = useMemo(()=>{
+    const m = {};
+    rows.forEach(r=>{
+      const tienda = r["Store Name"] || "—";
+      if(!m[tienda]) m[tienda]={qty:0,sales:0,city:r["City"]||""};
+      m[tienda].qty   += parseFloat(r["POS Qty"]||0);
+      m[tienda].sales += parseFloat((r["POS Sales"]||"0").replace(/[$,]/g,""));
+    });
+    return Object.entries(m).sort((a,b)=>b[1].qty-a[1].qty).slice(0,10);
+  },[rows]);
+
+  const totalQty   = rows.reduce((s,r)=>s+parseFloat(r["POS Qty"]||0),0);
+  const totalSales = rows.reduce((s,r)=>s+parseFloat((r["POS Sales"]||"0").replace(/[$,]/g,"")),0);
+  const maxQty = Math.max(...porProducto.map(([,v])=>v.qty), 1);
+  const maxTienda = Math.max(...topTiendas.map(([,v])=>v.qty), 1);
+
+  return (
+    <>
+      <div className="sec-title" style={{marginTop:20}}>
+        Ventas B2B Lider · Sell Out Oficial
+      </div>
+
+      {/* Selector de fecha */}
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14,alignItems:"center"}}>
+        <Calendar size={14} color="#64748B"/>
+        <button className={`fecha-btn ${fechaSel==="todas"?"on":""}`} onClick={()=>setFechaSel("todas")}>Todas</button>
+        {fechas.map(f=>(
+          <button key={f} className={`fecha-btn ${fechaSel===f?"on":""}`} onClick={()=>setFechaSel(f)}>
+            {new Date(f+"T12:00").toLocaleDateString("es-CL",{weekday:"short",day:"numeric",month:"short"})}
+          </button>
+        ))}
+      </div>
+
+      {/* KPIs B2B */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:10,marginBottom:14}}>
+        <div className="stat">
+          <div className="lbl"><Package size={12}/> Unidades totales</div>
+          <div className="val">{Math.round(totalQty).toLocaleString("es-CL")}</div>
+          <div className="sub">POS Qty</div>
+        </div>
+        <div className="stat">
+          <div className="lbl"><TrendingUp size={12}/> Venta total</div>
+          <div className="val" style={{fontSize:16}}>{fmtCLP(totalSales)}</div>
+          <div className="sub">POS Sales</div>
+        </div>
+        <div className="stat">
+          <div className="lbl"><Store size={12}/> Tiendas activas</div>
+          <div className="val">{new Set(rows.filter(r=>parseFloat(r["POS Qty"]||0)>0).map(r=>r["Store Name"])).size}</div>
+          <div className="sub">con ventas &gt; 0</div>
+        </div>
+        <div className="stat">
+          <div className="lbl"><CheckCircle2 size={12}/> Productos</div>
+          <div className="val">{porProducto.filter(([,v])=>v.qty>0).length}</div>
+          <div className="sub">con ventas &gt; 0</div>
+        </div>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+        {/* Ventas por producto */}
+        <div className="card">
+          <div style={{padding:"12px 16px",borderBottom:"1px solid #F1F5F9",fontWeight:700,fontSize:13}}>
+            Unidades por producto
+          </div>
+          <div style={{padding:"12px 16px"}}>
+            {porProducto.map(([prod,v],i)=>(
+              <div key={prod} style={{marginBottom:12}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                  <span style={{fontSize:12,fontWeight:600,color:"#0B2A2D"}}>{prod}</span>
+                  <span style={{fontSize:12,fontWeight:700,color:"#0E6F76"}}>{Math.round(v.qty)} u</span>
+                </div>
+                <div style={{height:8,background:"#F1F5F9",borderRadius:4,overflow:"hidden"}}>
+                  <div style={{height:"100%",width:`${(v.qty/maxQty)*100}%`,background:COLORES_PROD[i%COLORES_PROD.length],borderRadius:4,transition:"width .3s"}}/>
+                </div>
+                <div style={{fontSize:11,color:"#94A3B8",marginTop:2}}>{fmtCLP(v.sales)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Top tiendas */}
+        <div className="card">
+          <div style={{padding:"12px 16px",borderBottom:"1px solid #F1F5F9",fontWeight:700,fontSize:13}}>
+            Top 10 tiendas por unidades
+          </div>
+          <div style={{padding:"12px 16px"}}>
+            {topTiendas.map(([tienda,v],i)=>(
+              <div key={tienda} style={{marginBottom:10}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+                  <span style={{fontSize:11,fontWeight:600,color:"#0B2A2D",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",paddingRight:8}}>
+                    {i+1}. {tienda}
+                  </span>
+                  <span style={{fontSize:11,fontWeight:700,color:"#0E6F76",flexShrink:0}}>{Math.round(v.qty)} u</span>
+                </div>
+                <div style={{height:6,background:"#F1F5F9",borderRadius:3,overflow:"hidden"}}>
+                  <div style={{height:"100%",width:`${(v.qty/maxTienda)*100}%`,background:COLORES_PROM[i%COLORES_PROM.length],borderRadius:3}}/>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Tabla completa */}
+      <div className="card" style={{marginTop:12}}>
+        <div style={{padding:"12px 16px",borderBottom:"1px solid #F1F5F9",fontWeight:700,fontSize:13}}>
+          Detalle por tienda y producto
+        </div>
+        <div style={{overflowX:"auto"}}>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>Tienda</th>
+                <th>Ciudad</th>
+                <th>Producto</th>
+                <th style={{textAlign:"right"}}>Stock OH</th>
+                <th style={{textAlign:"right"}}>POS Qty</th>
+                <th style={{textAlign:"right"}}>POS Sales</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.filter(r=>parseFloat(r["POS Qty"]||0)>0).sort((a,b)=>parseFloat(b["POS Qty"]||0)-parseFloat(a["POS Qty"]||0)).map((r,i)=>(
+                <tr key={i}>
+                  <td style={{fontSize:12,whiteSpace:"nowrap"}}>{r["Fecha"]}</td>
+                  <td style={{fontSize:12,fontWeight:600}}>{r["Store Name"]}</td>
+                  <td style={{fontSize:12,color:"#64748B"}}>{r["City"]}</td>
+                  <td style={{fontSize:12}}>{PROD_MAP[r["Item Desc 1"]]||r["Item Desc 1"]}</td>
+                  <td style={{fontSize:12,textAlign:"right",color:"#64748B"}}>{r["Curr Str On Hand Qty"]||r["Stock OnHand"]||"—"}</td>
+                  <td style={{fontSize:12,textAlign:"right",fontWeight:700,color:"#0E6F76"}}>{Math.round(parseFloat(r["POS Qty"]||0))}</td>
+                  <td style={{fontSize:12,textAlign:"right"}}>{fmtCLP(parseFloat((r["POS Sales"]||"0").replace(/[$,]/g,"")))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
+  );
 }
 
 function AudioPlayer({ url }) {
