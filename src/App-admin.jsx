@@ -123,7 +123,7 @@ function Dashboard({ onLogout }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [updatedAt, setUpdatedAt] = useState(null);
-  const [fechaSel, setFechaSel] = useState("hoy");
+  const [fechaSel, setFechaSel] = useState("todo");
   const [chartsReady, setChartsReady] = useState(false);
 
   async function fetchData() {
@@ -149,7 +149,11 @@ function Dashboard({ onLogout }) {
 
   const fechasDisponibles = useMemo(()=>{
     if(!data) return [];
-    const s=new Set([...data.marcaciones.map(r=>r["Fecha"]),...data.ventas.map(r=>r["Fecha"])]);
+    const s=new Set([
+      ...data.marcaciones.map(r=>r["Fecha"]),
+      ...data.ventas.map(r=>r["Fecha"]),
+      ...(data.ventasB2B||[]).map(r=>r["Fecha"]),
+    ]);
     return [...s].filter(Boolean).sort().reverse();
   },[data]);
 
@@ -163,7 +167,7 @@ function Dashboard({ onLogout }) {
   const marc = useMemo(()=>data?.marcaciones.filter(r=>fechasFilt.includes(r["Fecha"]))||[],[data,fechasFilt]);
   const vent = useMemo(()=>data?.ventas.filter(r=>fechasFilt.includes(r["Fecha"]))||[],[data,fechasFilt]);
   const cierresFilt = useMemo(()=>data?.cierres.filter(r=>fechasFilt.includes(r["Fecha"]))||[],[data,fechasFilt]);
-  const b2b = useMemo(()=>data?.ventasB2B||[],[data]);
+  const b2b = useMemo(()=>(data?.ventasB2B||[]).filter(r=>fechasFilt.includes(r["Fecha"])),[data,fechasFilt]);
 
   const promotores = useMemo(()=>[...new Set(marc.map(r=>r["Promotor"]))],[marc]);
   const totalUnidades = useMemo(()=>vent.reduce((s,r)=>s+parseInt(r["Unidades"]||0),0),[vent]);
@@ -486,7 +490,6 @@ function ChartsRenderer({ ventasPorProd, ventasPorProm, ready }) {
 }
 
 function VentasB2BSection({ data }) {
-  const [fechaSel, setFechaSel] = useState("todas");
   const [tiendaSel, setTiendaSel] = useState("todas");
 
   const PROD_MAP = {
@@ -497,20 +500,14 @@ function VentasB2BSection({ data }) {
     "DETERG PODS X25 UN":   "Detergente 25x Regular",
   };
 
-  const fechas = useMemo(()=>[...new Set(data.map(r=>r["Fecha"]).filter(Boolean))].sort().reverse(), [data]);
-  
   const tiendas = useMemo(()=>{
-    const base = fechaSel==="todas" ? data : data.filter(r=>r["Fecha"]===fechaSel);
-    return [...new Set(base.filter(r=>parseFloat(r["POS Qty"]||0)>0).map(r=>r["Store Name"]).filter(Boolean))].sort();
-  },[data, fechaSel]);
+    return [...new Set(data.filter(r=>parseFloat(r["POS Qty"]||0)>0).map(r=>r["Store Name"]).filter(Boolean))].sort();
+  },[data]);
 
   const rows = useMemo(()=>{
-    let r = fechaSel==="todas" ? data : data.filter(x=>x["Fecha"]===fechaSel);
-    if (tiendaSel!=="todas") r = r.filter(x=>x["Store Name"]===tiendaSel);
-    return r;
-  },[data, fechaSel, tiendaSel]);
-
-  const handleFecha = (f) => { setFechaSel(f); setTiendaSel("todas"); };
+    if (tiendaSel==="todas") return data;
+    return data.filter(x=>x["Store Name"]===tiendaSel);
+  },[data, tiendaSel]);
 
   // Totales por producto
   const porProducto = useMemo(()=>{
@@ -545,21 +542,6 @@ function VentasB2BSection({ data }) {
     <>
       <div className="sec-title" style={{marginTop:20}}>
         Ventas B2B Lider · Sell Out Oficial
-      </div>
-
-      {/* Selector de fecha */}
-      <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14,alignItems:"center"}}>
-        <Calendar size={14} color="#64748B"/>
-        <button className={`fecha-btn ${fechaSel==="todas"?"on":""}`} onClick={()=>handleFecha("todas")}>Todas</button>
-        {fechas.map(f=>{
-          const d = new Date(f+"T12:00");
-          const label = isNaN(d) ? f : d.toLocaleDateString("es-CL",{weekday:"short",day:"numeric",month:"short"});
-          return (
-            <button key={f} className={`fecha-btn ${fechaSel===f?"on":""}`} onClick={()=>handleFecha(f)}>
-              {label}
-            </button>
-          );
-        })}
       </div>
 
       {/* Filtro por tienda */}
@@ -660,9 +642,7 @@ function VentasB2BSection({ data }) {
                 <th>Tienda</th>
                 <th>Ciudad</th>
                 <th>Producto</th>
-                <th style={{textAlign:"right"}}>Stock OH</th>
-                <th style={{textAlign:"right"}}>POS Qty</th>
-                <th style={{textAlign:"right"}}>POS Sales</th>
+                <th style={{textAlign:"right"}}>Unidades</th>
               </tr>
             </thead>
             <tbody>
@@ -672,9 +652,7 @@ function VentasB2BSection({ data }) {
                   <td style={{fontSize:12,fontWeight:600}}>{r["Store Name"]}</td>
                   <td style={{fontSize:12,color:"#64748B"}}>{r["City"]}</td>
                   <td style={{fontSize:12}}>{PROD_MAP[r["Item Desc 1"]]||r["Item Desc 1"]}</td>
-                  <td style={{fontSize:12,textAlign:"right",color:"#64748B"}}>{r["Curr Str On Hand Qty"]||r["Stock OnHand"]||"—"}</td>
                   <td style={{fontSize:12,textAlign:"right",fontWeight:700,color:"#0E6F76"}}>{Math.round(parseFloat(r["POS Qty"]||0))}</td>
-                  <td style={{fontSize:12,textAlign:"right"}}>{fmtCLP(parseFloat((r["POS Sales"]||"0").replace(/[$,]/g,"")))}</td>
                 </tr>
               ))}
             </tbody>
