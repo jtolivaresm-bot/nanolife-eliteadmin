@@ -491,6 +491,7 @@ function ChartsRenderer({ ventasPorProd, ventasPorProm, ready }) {
 
 function VentasB2BSection({ data }) {
   const [tiendaSel, setTiendaSel] = useState("todas");
+  const [fechaB2B, setFechaB2B] = useState("todas");
 
   const PROD_MAP = {
     "LIMPIA PISO LAVANDA":  "Limpiapisos Lavanda",
@@ -500,14 +501,20 @@ function VentasB2BSection({ data }) {
     "DETERG PODS X25 UN":   "Detergente 25x Regular",
   };
 
+  const fechasB2B = useMemo(()=>[...new Set(data.map(r=>r["Fecha"]).filter(Boolean))].sort().reverse(),[data]);
+
   const tiendas = useMemo(()=>{
-    return [...new Set(data.filter(r=>parseFloat(r["POS Qty"]||0)>0).map(r=>r["Store Name"]).filter(Boolean))].sort();
-  },[data]);
+    const base = fechaB2B==="todas" ? data : data.filter(r=>r["Fecha"]===fechaB2B);
+    return [...new Set(base.filter(r=>parseFloat(r["POS Qty"]||0)>0).map(r=>r["Store Name"]).filter(Boolean))].sort();
+  },[data, fechaB2B]);
 
   const rows = useMemo(()=>{
-    if (tiendaSel==="todas") return data;
-    return data.filter(x=>x["Store Name"]===tiendaSel);
-  },[data, tiendaSel]);
+    let r = fechaB2B==="todas" ? data : data.filter(x=>x["Fecha"]===fechaB2B);
+    if (tiendaSel!=="todas") r = r.filter(x=>x["Store Name"]===tiendaSel);
+    return r;
+  },[data, fechaB2B, tiendaSel]);
+
+  const handleFechaB2B = (f) => { setFechaB2B(f); setTiendaSel("todas"); };
 
   // Totales por producto
   const porProducto = useMemo(()=>{
@@ -542,6 +549,21 @@ function VentasB2BSection({ data }) {
     <>
       <div className="sec-title" style={{marginTop:20}}>
         Ventas B2B Lider · Sell Out Oficial
+      </div>
+
+      {/* Filtro por día */}
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:10,alignItems:"center"}}>
+        <Calendar size={14} color="#64748B"/>
+        <button className={`fecha-btn ${fechaB2B==="todas"?"on":""}`} onClick={()=>handleFechaB2B("todas")}>Todos los días</button>
+        {fechasB2B.map(f=>{
+          const d = new Date(f+"T12:00");
+          const label = isNaN(d) ? f : d.toLocaleDateString("es-CL",{weekday:"short",day:"numeric",month:"short"});
+          return (
+            <button key={f} className={`fecha-btn ${fechaB2B===f?"on":""}`} onClick={()=>handleFechaB2B(f)}>
+              {label}
+            </button>
+          );
+        })}
       </div>
 
       {/* Filtro por tienda */}
