@@ -539,11 +539,15 @@ function VentasB2BSection({ data }) {
       <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14,alignItems:"center"}}>
         <Calendar size={14} color="#64748B"/>
         <button className={`fecha-btn ${fechaSel==="todas"?"on":""}`} onClick={()=>setFechaSel("todas")}>Todas</button>
-        {fechas.map(f=>(
-          <button key={f} className={`fecha-btn ${fechaSel===f?"on":""}`} onClick={()=>setFechaSel(f)}>
-            {new Date(f+"T12:00").toLocaleDateString("es-CL",{weekday:"short",day:"numeric",month:"short"})}
-          </button>
-        ))}
+        {fechas.map(f=>{
+          const d = new Date(f+"T12:00");
+          const label = isNaN(d) ? f : d.toLocaleDateString("es-CL",{weekday:"short",day:"numeric",month:"short"});
+          return (
+            <button key={f} className={`fecha-btn ${fechaSel===f?"on":""}`} onClick={()=>setFechaSel(f)}>
+              {label}
+            </button>
+          );
+        })}
       </div>
 
       {/* KPIs B2B */}
