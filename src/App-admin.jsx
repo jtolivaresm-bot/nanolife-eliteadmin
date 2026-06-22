@@ -13,6 +13,17 @@ const COLORES_PROM = ["#0E6F76","#16A34A","#F5A623","#DC2626","#7C3AED","#0891B2
 const fmtCLP = n => new Intl.NumberFormat("es-CL",{style:"currency",currency:"CLP",maximumFractionDigits:0}).format(Math.round(n||0));
 const fmtFecha = f => f ? new Date(f+"T12:00").toLocaleDateString("es-CL",{weekday:"short",day:"numeric",month:"short"}) : "—";
 
+function getDriveId(url) {
+  if (!url) return null;
+  // https://drive.google.com/file/d/FILE_ID/view
+  const m1 = url.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if (m1) return m1[1];
+  // https://drive.google.com/uc?id=FILE_ID
+  const m2 = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (m2) return m2[1];
+  return null;
+}
+
 function normCoord(c) {
   if (!c) return null;
   const s = String(c).trim();
@@ -365,20 +376,30 @@ function Dashboard({ onLogout }) {
             <div className="sec-title">Fotos de góndola</div>
             <div className="card">
               <div style={{padding:16,display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:12}}>
-                {data.fotos.filter(f=>fechasFilt.includes(f["Fecha"]||"")).map((f,i)=>(
-                  <a key={i} href={f["View URL"]||f["URL"]} target="_blank" rel="noreferrer"
-                    style={{display:"block",borderRadius:12,overflow:"hidden",border:"1px solid #E2E8F0",textDecoration:"none"}}>
-                    <img src={f["URL"]} alt={f["Archivo"]}
-                      style={{width:"100%",aspectRatio:"1",objectFit:"cover",display:"block",background:"#F1F5F9"}}
-                      onError={e=>{e.target.style.display="none";}}/>
-                    <div style={{padding:"6px 8px",background:"#F8FAFC"}}>
-                      <div style={{fontSize:10,fontWeight:600,color:"#64748B",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                        {f["Archivo"]?.replace(/_/g," ").replace(".jpg","") || "—"}
+                {data.fotos.filter(f=>fechasFilt.includes(f["Fecha"]||"")).map((f,i)=>{
+                  const fileId = getDriveId(f["View URL"]||f["URL"]);
+                  const imgSrc = fileId ? `https://drive.google.com/thumbnail?id=${fileId}&sz=w400` : f["URL"];
+                  const viewUrl = f["View URL"]||f["URL"];
+                  return (
+                    <div key={i} style={{borderRadius:12,overflow:"hidden",border:"1px solid #E2E8F0",background:"#fff"}}>
+                      <div style={{position:"relative",aspectRatio:"1",background:"#F1F5F9",overflow:"hidden"}}>
+                        <img src={imgSrc} alt={f["Archivo"]}
+                          style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}
+                          onError={e=>{e.target.src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%23F1F5F9'/%3E%3Ctext x='50' y='55' text-anchor='middle' font-size='30' fill='%2394A3B8'%3E📷%3C/text%3E%3C/svg%3E";}}/>
+                        <a href={viewUrl} target="_blank" rel="noreferrer"
+                          style={{position:"absolute",top:6,right:6,background:"rgba(0,0,0,.5)",borderRadius:6,padding:"3px 7px",color:"#fff",fontSize:10,textDecoration:"none",display:"flex",alignItems:"center",gap:3}}>
+                          <ExternalLink size={9}/> Ver
+                        </a>
                       </div>
-                      <div style={{fontSize:10,color:"#94A3B8",marginTop:1}}>{f["Fecha"]}</div>
+                      <div style={{padding:"6px 8px",background:"#F8FAFC"}}>
+                        <div style={{fontSize:10,fontWeight:600,color:"#64748B",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                          {f["Archivo"]?.replace(/_/g," ").replace(".jpg","") || "—"}
+                        </div>
+                        <div style={{fontSize:10,color:"#94A3B8",marginTop:1}}>{f["Fecha"]}</div>
+                      </div>
                     </div>
-                  </a>
-                ))}
+                  );
+                })}
               </div>
               {data.fotos.filter(f=>fechasFilt.includes(f["Fecha"]||"")).length===0 &&
                 <div className="empty">Sin fotos para el período seleccionado</div>}
@@ -401,10 +422,7 @@ function Dashboard({ onLogout }) {
                       </div>
                       <div style={{fontSize:11,color:"#94A3B8",marginTop:1}}>{a["Fecha"]} · {a["Subido"]}</div>
                     </div>
-                    <a href={a["View URL"]||a["URL"]} target="_blank" rel="noreferrer"
-                      style={{display:"flex",alignItems:"center",gap:5,background:"#0E6F76",color:"#fff",borderRadius:8,padding:"6px 12px",fontSize:12,fontWeight:600,textDecoration:"none",flexShrink:0}}>
-                      <ExternalLink size={12}/> Escuchar
-                    </a>
+                    <AudioPlayer url={a["View URL"]||a["URL"]}/>
                   </div>
                 ))}
                 {data.audios.filter(f=>fechasFilt.includes(f["Fecha"]||"")).length===0 &&
@@ -461,6 +479,39 @@ function ChartsRenderer({ ventasPorProd, ventasPorProm, ready }) {
   },[ventasPorProd,ventasPorProm,ready]);
 
   return null;
+}
+
+function AudioPlayer({ url }) {
+  const [open, setOpen] = useState(false);
+  const fileId = getDriveId(url);
+  const embedUrl = fileId ? `https://drive.google.com/file/d/${fileId}/preview` : null;
+
+  if (!embedUrl) return (
+    <a href={url} target="_blank" rel="noreferrer"
+      style={{display:"flex",alignItems:"center",gap:5,background:"#0E6F76",color:"#fff",borderRadius:8,padding:"6px 12px",fontSize:12,fontWeight:600,textDecoration:"none",flexShrink:0}}>
+      <ExternalLink size={12}/> Escuchar
+    </a>
+  );
+
+  return (
+    <div style={{flexShrink:0}}>
+      {!open ? (
+        <button onClick={()=>setOpen(true)}
+          style={{display:"flex",alignItems:"center",gap:5,background:"#0E6F76",color:"#fff",border:"none",borderRadius:8,padding:"6px 12px",fontSize:12,fontWeight:600,cursor:"pointer"}}>
+          <Mic size={12}/> Reproducir
+        </button>
+      ) : (
+        <div style={{width:280}}>
+          <iframe src={embedUrl} width="280" height="60" allow="autoplay"
+            style={{border:"none",borderRadius:8,display:"block"}}/>
+          <button onClick={()=>setOpen(false)}
+            style={{fontSize:10,color:"#64748B",background:"none",border:"none",cursor:"pointer",marginTop:2}}>
+            Cerrar
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function PromoterCard({ promotor: p }) {
