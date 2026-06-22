@@ -487,8 +487,8 @@ function ChartsRenderer({ ventasPorProd, ventasPorProm, ready }) {
 
 function VentasB2BSection({ data }) {
   const [fechaSel, setFechaSel] = useState("todas");
+  const [tiendaSel, setTiendaSel] = useState("todas");
 
-  // Mapeo de nombres B2B → nombres limpios
   const PROD_MAP = {
     "LIMPIA PISO LAVANDA":  "Limpiapisos Lavanda",
     "LIMPIA PISO SUMMER":   "Limpiapisos Summer",
@@ -498,7 +498,19 @@ function VentasB2BSection({ data }) {
   };
 
   const fechas = useMemo(()=>[...new Set(data.map(r=>r["Fecha"]).filter(Boolean))].sort().reverse(), [data]);
-  const rows = useMemo(()=>fechaSel==="todas" ? data : data.filter(r=>r["Fecha"]===fechaSel), [data, fechaSel]);
+  
+  const tiendas = useMemo(()=>{
+    const base = fechaSel==="todas" ? data : data.filter(r=>r["Fecha"]===fechaSel);
+    return [...new Set(base.filter(r=>parseFloat(r["POS Qty"]||0)>0).map(r=>r["Store Name"]).filter(Boolean))].sort();
+  },[data, fechaSel]);
+
+  const rows = useMemo(()=>{
+    let r = fechaSel==="todas" ? data : data.filter(x=>x["Fecha"]===fechaSel);
+    if (tiendaSel!=="todas") r = r.filter(x=>x["Store Name"]===tiendaSel);
+    return r;
+  },[data, fechaSel, tiendaSel]);
+
+  const handleFecha = (f) => { setFechaSel(f); setTiendaSel("todas"); };
 
   // Totales por producto
   const porProducto = useMemo(()=>{
@@ -538,17 +550,33 @@ function VentasB2BSection({ data }) {
       {/* Selector de fecha */}
       <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14,alignItems:"center"}}>
         <Calendar size={14} color="#64748B"/>
-        <button className={`fecha-btn ${fechaSel==="todas"?"on":""}`} onClick={()=>setFechaSel("todas")}>Todas</button>
+        <button className={`fecha-btn ${fechaSel==="todas"?"on":""}`} onClick={()=>handleFecha("todas")}>Todas</button>
         {fechas.map(f=>{
           const d = new Date(f+"T12:00");
           const label = isNaN(d) ? f : d.toLocaleDateString("es-CL",{weekday:"short",day:"numeric",month:"short"});
           return (
-            <button key={f} className={`fecha-btn ${fechaSel===f?"on":""}`} onClick={()=>setFechaSel(f)}>
+            <button key={f} className={`fecha-btn ${fechaSel===f?"on":""}`} onClick={()=>handleFecha(f)}>
               {label}
             </button>
           );
         })}
       </div>
+
+      {/* Filtro por tienda */}
+      {tiendas.length > 0 && (
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14,alignItems:"center"}}>
+          <Store size={14} color="#64748B"/>
+          <button className={`fecha-btn ${tiendaSel==="todas"?"on":""}`} onClick={()=>setTiendaSel("todas")}>
+            Todas las tiendas
+          </button>
+          {tiendas.map(t=>(
+            <button key={t} className={`fecha-btn ${tiendaSel===t?"on":""}`} onClick={()=>setTiendaSel(t)}
+              style={{fontSize:12}}>
+              {t}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* KPIs B2B */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:10,marginBottom:14}}>
