@@ -10,6 +10,28 @@ const PAGO_JORNADA = 22000;
 const COLORES_PROD = ["#0E6F76","#16A34A","#F5A623","#DC2626","#7C3AED"];
 const COLORES_PROM = ["#0E6F76","#16A34A","#F5A623","#DC2626","#7C3AED","#0891B2","#D97706","#059669"];
 
+// Mapeo Store Nbr B2B → sala → promotor
+const STORE_NBR_SALA = {
+  "655": { sala:"Antofagasta",    promotor:"Margarita Meza" },
+  "92":  { sala:"La Serena",      promotor:"Fernanda Taucano" },
+  "3":   { sala:"Ñuñoa",          promotor:"Diego Fierro" },
+  "57":  { sala:"Vitacura",       promotor:"Rodrigo Correa" },
+  "75":  { sala:"Maipú",          promotor:"Karla Aranguiz" },
+  "95":  { sala:"La Reina",       promotor:"Max Villanueva" },
+  "97":  { sala:"Lo Barnechea",   promotor:"Patricio Concha" },
+  "120": { sala:"Temuco",         promotor:"Maribel Cid" },
+};
+
+const COMISION_B2B = {
+  "LIMPIA PISO LAVANDA": 200,
+  "LIMPIA PISO SUMMER":  200,
+  "DETERG  PODSX10 UN":  250,
+  "DETERG PODSX10 UN":   250,
+  "CAPSULAS PODS HIPO":  250,
+  "DETERG PODS X25 UN":  400,
+};
+const getComision = (desc) => COMISION_B2B[desc] || COMISION_B2B[desc?.replace(/  /g," ")] || 0;
+
 const fmtCLP = n => new Intl.NumberFormat("es-CL",{style:"currency",currency:"CLP",maximumFractionDigits:0}).format(Math.round(n||0));
 const fmtFecha = f => f ? new Date(f+"T12:00").toLocaleDateString("es-CL",{weekday:"short",day:"numeric",month:"short"}) : "—";
 
@@ -387,6 +409,7 @@ function Dashboard({ onLogout }) {
 
           {/* VENTAS B2B LIDER */}
           {b2b.length > 0 && <VentasB2BSection data={b2b}/>}
+          {b2b.length > 0 && <ComisionesSection data={b2b} marcaciones={marc}/>}
 
           {/* FOTOS DE GÓNDOLA */}
           {data.fotos?.length > 0 && <>
@@ -496,6 +519,170 @@ function ChartsRenderer({ ventasPorProd, ventasPorProm, ready }) {
   },[ventasPorProd,ventasPorProm,ready]);
 
   return null;
+}
+
+/* ══════════════════ COMISIONES POR PROMOTOR ══════════════════ */
+function ComisionesSection({ data, marcaciones }) {
+  const [expanded, setExpanded] = useState(null);
+
+  // Calcular comisiones por promotor cruzando B2B con mapping de salas
+  const porPromotor = useMemo(()=>{
+    const m = {};
+
+    // Agrupar ventas B2B por promotor via Store Nbr
+    data.forEach(r=>{
+      const storeNbr = String(parseInt(r["Store Nbr"]||0));
+      const info = STORE_NBR_SALA[storeNbr];
+      if (!info) return;
+      const qty   = parseFloat(r["POS Qty"]||0);
+      if (qty <= 0) return;
+      const com   = qty * getComision(r["Item Desc 1"]);
+      const fecha = r["Fecha"]||"";
+      const prod  = r["Item Desc 1"]||"";
+
+      if (!m[info.promotor]) m[info.promotor] = {
+        nombre: info.promotor,
+        sala: info.sala,
+        totalQty: 0,
+        totalCom: 0,
+        jornadasCompletas: 0,
+        pagoJornadas: 0,
+        porFecha: {},
+      };
+
+      m[info.promotor].totalQty += qty;
+      m[info.promotor].totalCom += com;
+
+      if (!m[info.promotor].porFecha[fecha]) m[info.promotor].porFecha[fecha] = { qty:0, com:0, prods:[] };
+      m[info.promotor].porFecha[fecha].qty += qty;
+      m[info.promotor].porFecha[fecha].com += com;
+      m[info.promotor].porFecha[fecha].prods.push({ prod, qty, com });
+    });
+
+    // Calcular jornadas completas desde marcaciones
+    Object.values(m).forEach(p=>{
+      const dias = {};
+      (marcaciones||[]).filter(r=>r["Promotor"]===p.nombre).forEach(r=>{
+        const k = r["Fecha"];
+        if (!dias[k]) dias[k]={ae:0,as:0,pe:0,ps:0};
+        if(r["Turno"]==="AM"&&r["Tipo"]==="Entrada") dias[k].ae=1;
+        if(r["Turno"]==="AM"&&r["Tipo"]==="Salida")  dias[k].as=1;
+        if(r["Turno"]==="PM"&&r["Tipo"]==="Entrada") dias[k].pe=1;
+        if(r["Turno"]==="PM"&&r["Tipo"]==="Salida")  dias[k].ps=1;
+      });
+      p.jornadasCompletas = Object.values(dias).filter(d=>d.ae&&d.as&&d.pe&&d.ps).length;
+      p.pagoJornadas = p.jornadasCompletas * PAGO_JORNADA;
+    });
+
+    return Object.values(m).sort((a,b)=>(b.totalCom+b.pagoJornadas)-(a.totalCom+a.pagoJornadas));
+  }, [data, marcaciones]);
+
+  if (!porPromotor.length) return null;
+
+  const totalGeneral = porPromotor.reduce((s,p)=>s+p.totalCom+p.pagoJornadas, 0);
+  const maxTotal = Math.max(...porPromotor.map(p=>p.totalCom+p.pagoJornadas), 1);
+
+  return (
+    <>
+      <div className="sec-title" style={{marginTop:20}}>
+        Comisiones por promotor · Sell Out B2B
+      </div>
+
+      {/* Total general */}
+      <div style={{background:"linear-gradient(135deg,#0A4C52,#0E6F76)",borderRadius:16,padding:"16px 20px",marginBottom:14,color:"#fff",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div>
+          <div style={{fontSize:11,opacity:.75,textTransform:"uppercase",letterSpacing:".08em",marginBottom:4}}>Total a pagar al equipo</div>
+          <div style={{fontSize:32,fontWeight:700,letterSpacing:"-.02em"}}>{fmtCLP(totalGeneral)}</div>
+          <div style={{fontSize:12,opacity:.7,marginTop:4}}>Jornadas + Comisiones B2B · {porPromotor.length} promotores</div>
+        </div>
+        <TrendingUp size={40} style={{opacity:.3}}/>
+      </div>
+
+      {/* Ranking */}
+      <div className="card" style={{padding:0}}>
+        {porPromotor.map((p,i)=>{
+          const total = p.totalCom + p.pagoJornadas;
+          const isOpen = expanded === p.nombre;
+          const color = COLORES_PROM[i%COLORES_PROM.length];
+          const pct = (total/maxTotal)*100;
+
+          return (
+            <div key={p.nombre} style={{borderBottom:"1px solid #F1F5F9"}}>
+              {/* Header row */}
+              <div style={{padding:"14px 16px",cursor:"pointer",userSelect:"none"}}
+                onClick={()=>setExpanded(isOpen ? null : p.nombre)}>
+                <div style={{display:"flex",alignItems:"center",gap:12}}>
+                  {/* Ranking number */}
+                  <div style={{width:28,height:28,borderRadius:"50%",background:color+"22",color,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:13,flexShrink:0}}>
+                    {i+1}
+                  </div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontWeight:700,fontSize:14}}>{p.nombre}</div>
+                    <div style={{fontSize:12,color:"#64748B",marginTop:1}}>{p.sala}</div>
+                    {/* Barra de progreso */}
+                    <div style={{height:4,background:"#F1F5F9",borderRadius:2,marginTop:6,overflow:"hidden"}}>
+                      <div style={{height:"100%",width:`${pct}%`,background:color,borderRadius:2,transition:"width .4s"}}/>
+                    </div>
+                  </div>
+                  <div style={{textAlign:"right",flexShrink:0}}>
+                    <div style={{fontWeight:700,fontSize:16,color}}>{fmtCLP(total)}</div>
+                    <div style={{fontSize:11,color:"#94A3B8",marginTop:2}}>
+                      {p.jornadasCompletas}j · {Math.round(p.totalQty)}u
+                    </div>
+                  </div>
+                  <div style={{color:"#94A3B8",marginLeft:4}}>
+                    {isOpen ? <ChevronUp size={16}/> : <ChevronDown size={16}/>}
+                  </div>
+                </div>
+              </div>
+
+              {/* Detalle expandido */}
+              {isOpen && (
+                <div style={{background:"#F8FAFC",borderTop:"1px solid #F1F5F9",padding:"12px 16px"}}>
+                  {/* Resumen */}
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
+                    {[
+                      ["Jornadas", p.jornadasCompletas, fmtCLP(p.pagoJornadas)],
+                      ["Unidades", Math.round(p.totalQty), "vendidas"],
+                      ["Comisión B2B", fmtCLP(p.totalCom), "por ventas"],
+                    ].map(([lbl,val,sub])=>(
+                      <div key={lbl} style={{background:"#fff",borderRadius:10,padding:"10px 12px",border:"1px solid #E2E8F0"}}>
+                        <div style={{fontSize:10,color:"#64748B",fontWeight:600,textTransform:"uppercase",letterSpacing:".06em",marginBottom:4}}>{lbl}</div>
+                        <div style={{fontSize:16,fontWeight:700,color:"#0E6F76"}}>{val}</div>
+                        <div style={{fontSize:11,color:"#94A3B8",marginTop:1}}>{sub}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Detalle por día */}
+                  {Object.entries(p.porFecha).sort((a,b)=>b[0].localeCompare(a[0])).map(([fecha, d])=>(
+                    <div key={fecha} style={{marginBottom:10,background:"#fff",borderRadius:10,border:"1px solid #E2E8F0",overflow:"hidden"}}>
+                      <div style={{padding:"8px 12px",background:"#F0FDF4",borderBottom:"1px solid #DCFCE7",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                        <span style={{fontWeight:600,fontSize:13,textTransform:"capitalize"}}>{fmtFecha(fecha)}</span>
+                        <span style={{fontWeight:700,fontSize:13,color:"#15803D"}}>{Math.round(d.qty)} u · {fmtCLP(d.com)}</span>
+                      </div>
+                      {d.prods.map((v,j)=>(
+                        <div key={j} style={{display:"flex",justifyContent:"space-between",padding:"6px 12px",borderBottom:j<d.prods.length-1?"1px solid #F1F5F9":undefined,fontSize:12}}>
+                          <span style={{color:"#64748B"}}>{v.prod?.replace("LIMPIA PISO ","LP ").replace("DETERG  ","Det.").replace("CAPSULAS PODS","Cáps.").replace("DETERG ","Det.")}</span>
+                          <span><b style={{color:"#0B2A2D"}}>{Math.round(v.qty)}u</b> · <span style={{color:"#0E6F76"}}>{fmtCLP(v.com)}</span></span>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+
+                  {/* Total promotor */}
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 12px",background:"#0E6F76",borderRadius:10,marginTop:4}}>
+                    <span style={{color:"rgba(255,255,255,.8)",fontSize:13,fontWeight:600}}>Total a pagar</span>
+                    <span style={{color:"#fff",fontSize:18,fontWeight:700}}>{fmtCLP(total)}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
 }
 
 function VentasB2BSection({ data }) {
