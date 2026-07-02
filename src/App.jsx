@@ -422,7 +422,7 @@ function Dashboard({ onLogout }) {
 
           {/* VENTAS B2B LIDER */}
           {b2b.length > 0 && <VentasB2BSection data={b2b}/>}
-          {b2b.length > 0 && <ComisionesSection data={b2b} marcaciones={marc}/>}
+          {b2b.length > 0 && <ComisionesSection data={b2b} marcaciones={data?.marcaciones||[]}/>}
 
           {/* FOTOS DE GÓNDOLA */}
           {data.fotos?.length > 0 && <>
@@ -572,23 +572,27 @@ function ComisionesSection({ data, marcaciones }) {
       m[info.promotor].porFecha[fecha].prods.push({ prod, qty, com });
     });
 
-    // Calcular jornadas completas desde marcaciones
-    // Solo contar fechas que también tienen ventas B2B (mismo período)
-    const fechasB2B = new Set(Object.values(m).flatMap(p=>Object.keys(p.porFecha)));
+    // Calcular jornadas completas - solo días con AM+PM completo en marcaciones
     Object.values(m).forEach(p=>{
       const dias = {};
       (marcaciones||[])
-        .filter(r=>r["Promotor"]===p.nombre && fechasB2B.has(normFecha(r["Fecha"]||"")))
+        .filter(r=>r["Promotor"]===p.nombre)
         .forEach(r=>{
           const k = normFecha(r["Fecha"]||"");
+          if (!k) return;
           if (!dias[k]) dias[k]={ae:0,as:0,pe:0,ps:0};
           if(r["Turno"]==="AM"&&r["Tipo"]==="Entrada") dias[k].ae=1;
           if(r["Turno"]==="AM"&&r["Tipo"]==="Salida")  dias[k].as=1;
           if(r["Turno"]==="PM"&&r["Tipo"]==="Entrada") dias[k].pe=1;
           if(r["Turno"]==="PM"&&r["Tipo"]==="Salida")  dias[k].ps=1;
         });
-      p.jornadasCompletas = Object.values(dias).filter(d=>d.ae&&d.as&&d.pe&&d.ps).length;
+      const fechasTrabajadas = new Set(
+        Object.entries(dias).filter(([,d])=>d.ae&&d.as&&d.pe&&d.ps).map(([f])=>f)
+      );
+      p.jornadasCompletas = fechasTrabajadas.size;
       p.pagoJornadas = p.jornadasCompletas * PAGO_JORNADA;
+      Object.keys(p.porFecha).forEach(f=>{ if(!fechasTrabajadas.has(f)) delete p.porFecha[f]; });
+      fechasTrabajadas.forEach(f=>{ if(!p.porFecha[f]) p.porFecha[f]={qty:0,com:0,prods:[]}; });
     });
 
     return Object.values(m).sort((a,b)=>(b.totalCom+b.pagoJornadas)-(a.totalCom+a.pagoJornadas));
