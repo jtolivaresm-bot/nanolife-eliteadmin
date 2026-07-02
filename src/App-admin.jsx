@@ -33,7 +33,20 @@ const COMISION_B2B = {
 const getComision = (desc) => COMISION_B2B[desc] || COMISION_B2B[desc?.replace(/  /g," ")] || 0;
 
 const fmtCLP = n => new Intl.NumberFormat("es-CL",{style:"currency",currency:"CLP",maximumFractionDigits:0}).format(Math.round(n||0));
-const fmtFecha = f => f ? new Date(f+"T12:00").toLocaleDateString("es-CL",{weekday:"short",day:"numeric",month:"short"}) : "—";
+const normFecha = f => {
+  if (!f) return "";
+  if (f.match(/^\d{2}[-\/]\d{2}[-\/]\d{4}$/)) {
+    const [d,m,y] = f.split(/[-\/]/);
+    return `${y}-${m}-${d}`;
+  }
+  return f;
+};
+const fmtFecha = f => {
+  if (!f) return "—";
+  const iso = normFecha(f);
+  const d = new Date(iso+"T12:00");
+  return isNaN(d) ? f : d.toLocaleDateString("es-CL",{weekday:"short",day:"numeric",month:"short"});
+};
 
 function getDriveId(url) {
   if (!url) return null;
@@ -537,7 +550,7 @@ function ComisionesSection({ data, marcaciones }) {
       const qty   = parseFloat(r["POS Qty"]||0);
       if (qty <= 0) return;
       const com   = qty * getComision(r["Item Desc 1"]);
-      const fecha = r["Fecha"]||"";
+      const fecha = normFecha(r["Fecha"]||"");
       const prod  = r["Item Desc 1"]||"";
 
       if (!m[info.promotor]) m[info.promotor] = {
@@ -560,16 +573,20 @@ function ComisionesSection({ data, marcaciones }) {
     });
 
     // Calcular jornadas completas desde marcaciones
+    // Solo contar fechas que también tienen ventas B2B (mismo período)
+    const fechasB2B = new Set(Object.values(m).flatMap(p=>Object.keys(p.porFecha)));
     Object.values(m).forEach(p=>{
       const dias = {};
-      (marcaciones||[]).filter(r=>r["Promotor"]===p.nombre).forEach(r=>{
-        const k = r["Fecha"];
-        if (!dias[k]) dias[k]={ae:0,as:0,pe:0,ps:0};
-        if(r["Turno"]==="AM"&&r["Tipo"]==="Entrada") dias[k].ae=1;
-        if(r["Turno"]==="AM"&&r["Tipo"]==="Salida")  dias[k].as=1;
-        if(r["Turno"]==="PM"&&r["Tipo"]==="Entrada") dias[k].pe=1;
-        if(r["Turno"]==="PM"&&r["Tipo"]==="Salida")  dias[k].ps=1;
-      });
+      (marcaciones||[])
+        .filter(r=>r["Promotor"]===p.nombre && fechasB2B.has(normFecha(r["Fecha"]||"")))
+        .forEach(r=>{
+          const k = normFecha(r["Fecha"]||"");
+          if (!dias[k]) dias[k]={ae:0,as:0,pe:0,ps:0};
+          if(r["Turno"]==="AM"&&r["Tipo"]==="Entrada") dias[k].ae=1;
+          if(r["Turno"]==="AM"&&r["Tipo"]==="Salida")  dias[k].as=1;
+          if(r["Turno"]==="PM"&&r["Tipo"]==="Entrada") dias[k].pe=1;
+          if(r["Turno"]==="PM"&&r["Tipo"]==="Salida")  dias[k].ps=1;
+        });
       p.jornadasCompletas = Object.values(dias).filter(d=>d.ae&&d.as&&d.pe&&d.ps).length;
       p.pagoJornadas = p.jornadasCompletas * PAGO_JORNADA;
     });
