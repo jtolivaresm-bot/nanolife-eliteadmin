@@ -185,9 +185,9 @@ function Dashboard({ onLogout }) {
   const fechasDisponibles = useMemo(()=>{
     if(!data) return [];
     const s=new Set([
-      ...data.marcaciones.map(r=>normFecha(r["Fecha"])),
-      ...data.ventas.map(r=>normFecha(r["Fecha"])),
-      ...(data.ventasB2B||[]).map(r=>normFecha(r["Fecha"])),
+      ...data.marcaciones.map(r=>r["Fecha"]),
+      ...data.ventas.map(r=>r["Fecha"]),
+      ...(data.ventasB2B||[]).map(r=>r["Fecha"]),
     ]);
     return [...s].filter(Boolean).sort().reverse();
   },[data]);
@@ -197,13 +197,14 @@ function Dashboard({ onLogout }) {
     if(fechaSel==="hoy") return fechasDisponibles.filter(f=>f===hoyISO);
     if(fechaSel==="semana"){const h=new Date();h.setDate(h.getDate()-7);return fechasDisponibles.filter(f=>f>=h.toISOString().slice(0,10));}
     if(fechaSel==="todo") return fechasDisponibles;
+    // Fecha específica
     return [fechaSel];
   },[fechaSel,fechasDisponibles,hoyISO]);
 
-  const marc = useMemo(()=>data?.marcaciones.filter(r=>fechasFilt.includes(normFecha(r["Fecha"])))||[],[data,fechasFilt]);
-  const vent = useMemo(()=>data?.ventas.filter(r=>fechasFilt.includes(normFecha(r["Fecha"])))||[],[data,fechasFilt]);
-  const cierresFilt = useMemo(()=>data?.cierres.filter(r=>fechasFilt.includes(normFecha(r["Fecha"])))||[],[data,fechasFilt]);
-  const b2b = useMemo(()=>(data?.ventasB2B||[]).filter(r=>fechasFilt.includes(normFecha(r["Fecha"]))),[data,fechasFilt]);
+  const marc = useMemo(()=>data?.marcaciones.filter(r=>fechasFilt.includes(r["Fecha"]))||[],[data,fechasFilt]);
+  const vent = useMemo(()=>data?.ventas.filter(r=>fechasFilt.includes(r["Fecha"]))||[],[data,fechasFilt]);
+  const cierresFilt = useMemo(()=>data?.cierres.filter(r=>fechasFilt.includes(r["Fecha"]))||[],[data,fechasFilt]);
+  const b2b = useMemo(()=>(data?.ventasB2B||[]).filter(r=>fechasFilt.includes(r["Fecha"])),[data,fechasFilt]);
 
   const promotores = useMemo(()=>[...new Set(marc.map(r=>r["Promotor"]))],[marc]);
   const totalUnidades = useMemo(()=>vent.reduce((s,r)=>s+parseInt(r["Unidades"]||0),0),[vent]);
@@ -421,7 +422,7 @@ function Dashboard({ onLogout }) {
 
           {/* VENTAS B2B LIDER */}
           {b2b.length > 0 && <VentasB2BSection data={b2b}/>}
-          {b2b.length > 0 && <ComisionesSection data={b2b} marcaciones={marc}/>}
+          {b2b.length > 0 && <ComisionesSection data={b2b} marcaciones={data?.marcaciones||[]}/>}
 
           {/* FOTOS DE GÓNDOLA */}
           {data.fotos?.length > 0 && <>
@@ -564,14 +565,14 @@ function ComisionesSection({ data, marcaciones }) {
 
       m[info.promotor].totalQty += qty;
       m[info.promotor].totalCom += com;
-      // Acumular B2B por fecha (se filtra después por días trabajados)
+
       if (!m[info.promotor].porFecha[fecha]) m[info.promotor].porFecha[fecha] = { qty:0, com:0, prods:[] };
       m[info.promotor].porFecha[fecha].qty += qty;
       m[info.promotor].porFecha[fecha].com += com;
       m[info.promotor].porFecha[fecha].prods.push({ prod, qty, com });
     });
 
-    // Calcular jornadas completas y filtrar porFecha a solo días trabajados
+    // Calcular jornadas completas desde marcaciones (sin filtrar por período)
     Object.values(m).forEach(p=>{
       const dias = {};
       (marcaciones||[])
@@ -585,17 +586,14 @@ function ComisionesSection({ data, marcaciones }) {
           if(r["Turno"]==="PM"&&r["Tipo"]==="Entrada") dias[k].pe=1;
           if(r["Turno"]==="PM"&&r["Tipo"]==="Salida")  dias[k].ps=1;
         });
-
-      // Solo fechas con jornada AM+PM completa
+      // Solo fechas con AM+PM completo
       const fechasTrabajadas = new Set(
         Object.entries(dias).filter(([,d])=>d.ae&&d.as&&d.pe&&d.ps).map(([f])=>f)
       );
       p.jornadasCompletas = fechasTrabajadas.size;
       p.pagoJornadas = p.jornadasCompletas * PAGO_JORNADA;
-
-      // Filtrar porFecha: solo días que el promotor realmente trabajó
+      // Filtrar porFecha a solo días trabajados
       Object.keys(p.porFecha).forEach(f=>{ if(!fechasTrabajadas.has(f)) delete p.porFecha[f]; });
-      // Agregar días trabajados sin venta B2B
       fechasTrabajadas.forEach(f=>{ if(!p.porFecha[f]) p.porFecha[f]={qty:0,com:0,prods:[]}; });
     });
 
