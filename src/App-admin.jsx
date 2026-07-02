@@ -565,15 +565,14 @@ function ComisionesSection({ data, marcaciones }) {
 
       m[info.promotor].totalQty += qty;
       m[info.promotor].totalCom += com;
-
+      // Acumular B2B por fecha (se filtra después por días trabajados)
       if (!m[info.promotor].porFecha[fecha]) m[info.promotor].porFecha[fecha] = { qty:0, com:0, prods:[] };
       m[info.promotor].porFecha[fecha].qty += qty;
       m[info.promotor].porFecha[fecha].com += com;
       m[info.promotor].porFecha[fecha].prods.push({ prod, qty, com });
     });
 
-    // Calcular jornadas completas desde marcaciones
-    // Solo contar días donde el promotor tiene AM+PM completos en el Sheet
+    // Calcular jornadas completas y filtrar porFecha a solo días trabajados
     Object.values(m).forEach(p=>{
       const dias = {};
       (marcaciones||[])
@@ -587,14 +586,18 @@ function ComisionesSection({ data, marcaciones }) {
           if(r["Turno"]==="PM"&&r["Tipo"]==="Entrada") dias[k].pe=1;
           if(r["Turno"]==="PM"&&r["Tipo"]==="Salida")  dias[k].ps=1;
         });
-      // Solo jornadas realmente completadas (AM+PM)
-      const jornadasReales = Object.entries(dias).filter(([,d])=>d.ae&&d.as&&d.pe&&d.ps);
-      p.jornadasCompletas = jornadasReales.length;
+
+      // Solo fechas con jornada AM+PM completa
+      const fechasTrabajadas = new Set(
+        Object.entries(dias).filter(([,d])=>d.ae&&d.as&&d.pe&&d.ps).map(([f])=>f)
+      );
+      p.jornadasCompletas = fechasTrabajadas.size;
       p.pagoJornadas = p.jornadasCompletas * PAGO_JORNADA;
-      // Agregar solo las fechas con jornada completa al porFecha si no están
-      jornadasReales.forEach(([fecha])=>{
-        if (!p.porFecha[fecha]) p.porFecha[fecha] = { qty:0, com:0, prods:[], soloJornada:true };
-      });
+
+      // Filtrar porFecha: solo días que el promotor realmente trabajó
+      Object.keys(p.porFecha).forEach(f=>{ if(!fechasTrabajadas.has(f)) delete p.porFecha[f]; });
+      // Agregar días trabajados sin venta B2B
+      fechasTrabajadas.forEach(f=>{ if(!p.porFecha[f]) p.porFecha[f]={qty:0,com:0,prods:[]}; });
     });
 
     return Object.values(m).sort((a,b)=>(b.totalCom+b.pagoJornadas)-(a.totalCom+a.pagoJornadas));
