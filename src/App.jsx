@@ -644,10 +644,18 @@ function MetricasSection({ data, marcaciones, fechasFilt, chartsReady }) {
         pagoJornadas,
         total: p.totalCom + pagoJornadas,
         cumplimiento: Math.min(100, Math.round((p.jornadasCompletas/jornadasEsperadas)*100)),
+        // "jornada activada" = jornada trabajada (AM+PM completo), no día calendario del período
+        promJornada: p.jornadasCompletas>0 ? p.totalQty/p.jornadasCompletas : 0,
       };
     })
     .sort((a,b)=>b.total-a.total),
   [porPromotor, jornadasEsperadas]);
+
+  const promJornadaEquipo = useMemo(()=>{
+    const totalQty = ranking.reduce((s,p)=>s+p.totalQty,0);
+    const totalJornadas = ranking.reduce((s,p)=>s+p.jornadasCompletas,0);
+    return totalJornadas>0 ? totalQty/totalJornadas : 0;
+  },[ranking]);
 
   // Tendencia semanal: agrupa todas las fechas (de todos los promotores) por semana ISO (lunes)
   const tendenciaSemanal = useMemo(()=>{
@@ -690,10 +698,20 @@ function MetricasSection({ data, marcaciones, fechasFilt, chartsReady }) {
   return (
     <>
       <div className="sec-title" style={{marginTop:20}}>Métricas de desempeño</div>
+
+      <div style={{background:"linear-gradient(135deg,#0A4C52,#0E6F76)",borderRadius:16,padding:"16px 20px",marginBottom:14,color:"#fff",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div>
+          <div style={{fontSize:11,opacity:.75,textTransform:"uppercase",letterSpacing:".08em",marginBottom:4}}>Promedio de ventas por jornada activada</div>
+          <div style={{fontSize:32,fontWeight:700,letterSpacing:"-.02em"}}>{promJornadaEquipo.toFixed(1)} u</div>
+          <div style={{fontSize:12,opacity:.7,marginTop:4}}>Unidades B2B ÷ jornadas completadas (AM+PM) · equipo completo</div>
+        </div>
+        <TrendingUp size={40} style={{opacity:.3}}/>
+      </div>
+
       <div className="card" style={{padding:0,overflowX:"auto"}}>
         <table className="table">
           <thead>
-            <tr><th>#</th><th>Promotor</th><th>Sala</th><th>Jornadas</th><th>Cumplimiento</th><th>Unidades B2B</th><th>Comisión B2B</th><th>Total</th></tr>
+            <tr><th>#</th><th>Promotor</th><th>Sala</th><th>Jornadas</th><th>Cumplimiento</th><th>Unidades B2B</th><th>Prom./Jornada</th><th>Comisión B2B</th><th>Total</th></tr>
           </thead>
           <tbody>
             {ranking.map((p,i)=>(
@@ -711,6 +729,9 @@ function MetricasSection({ data, marcaciones, fechasFilt, chartsReady }) {
                   </div>
                 </td>
                 <td style={{fontSize:13}}>{p.totalQty}</td>
+                <td style={{fontSize:13,fontWeight:600,color: p.promJornada>=promJornadaEquipo?"#15803D":"#B45309"}}>
+                  {p.jornadasCompletas>0 ? `${p.promJornada.toFixed(1)} u` : "—"}
+                </td>
                 <td style={{fontSize:13}}>{fmtCLP(p.totalCom)}</td>
                 <td style={{fontWeight:700,color:"#0E6F76",whiteSpace:"nowrap"}}>{fmtCLP(p.total)}</td>
               </tr>
