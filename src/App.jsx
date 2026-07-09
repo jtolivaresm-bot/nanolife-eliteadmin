@@ -10,18 +10,6 @@ const PAGO_JORNADA = 22000;
 const COLORES_PROD = ["#0E6F76","#16A34A","#F5A623","#DC2626","#7C3AED"];
 const COLORES_PROM = ["#0E6F76","#16A34A","#F5A623","#DC2626","#7C3AED","#0891B2","#D97706","#059669"];
 
-// Mapeo Store Nbr B2B → sala → promotor
-const STORE_NBR_SALA = {
-  "655": { sala:"Antofagasta",    promotor:"Margarita Meza" },
-  "92":  { sala:"La Serena",      promotor:"Fernanda Taucano" },
-  "3":   { sala:"Ñuñoa",          promotor:"Diego Fierro" },
-  "57":  { sala:"Vitacura",       promotor:"Rodrigo Correa" },
-  "75":  { sala:"Maipú",          promotor:"Karla Aranguiz" },
-  "95":  { sala:"La Reina",       promotor:"Max Villanueva" },
-  "97":  { sala:"Lo Barnechea",   promotor:"Patricio Concha" },
-  "120": { sala:"Temuco",         promotor:"Maribel Cid" },
-};
-
 const COMISION_B2B = {
   "LIMPIA PISO LAVANDA": 200,
   "LIMPIA PISO SUMMER":  200,
@@ -42,6 +30,32 @@ const normFecha = f => {
   return f;
 };
 const limpiaSala = s => s?.replace("Hiper Lider - ","").replace("Lider Express - ","") || s;
+const normNombre = s => (s||"").toString().normalize("NFD").replace(/[̀-ͯ]/g,"").toUpperCase().trim();
+
+// Asigna cada fila de venta B2B al promotor correspondiente cruzando por sala+fecha
+// (no por Store Nbr fijo, que quedaba desactualizado a medida que crecía el equipo).
+// "Store Name" (B2B) se compara contra la "Sala" marcada por el promotor ese mismo día;
+// si más de un promotor marcó en esa misma sala normalizada ese día, se deja sin asignar
+// en vez de adivinar.
+function asignarPromotorB2B(b2bRows, marcaciones) {
+  const porFechaSala = {};
+  (marcaciones||[]).forEach(r=>{
+    const fecha = normFecha(r["Fecha"]||"");
+    const sala = normNombre(limpiaSala(r["Sala"]));
+    const promotor = r["Promotor"];
+    if (!fecha || !sala || !promotor) return;
+    if (!porFechaSala[fecha]) porFechaSala[fecha] = {};
+    if (!porFechaSala[fecha][sala]) porFechaSala[fecha][sala] = new Set();
+    porFechaSala[fecha][sala].add(promotor);
+  });
+  return b2bRows.map(r=>{
+    const fecha = normFecha(r["Fecha"]||"");
+    const tienda = normNombre(r["Store Name"]);
+    const candidatos = porFechaSala[fecha]?.[tienda];
+    const promotor = candidatos && candidatos.size===1 ? [...candidatos][0] : null;
+    return { ...r, _promotor: promotor };
+  });
+}
 const fmtFecha = f => {
   if (!f) return "—";
   const iso = normFecha(f);
@@ -236,17 +250,23 @@ function Dashboard({ onLogout }) {
   const marc = useMemo(()=>data?.marcaciones.filter(r=>fechasFilt.includes(normFecha(r["Fecha"]))&&filtraSalaProm(r))||[],[data,fechasFilt,salaSel,promotorSel]);
   const vent = useMemo(()=>data?.ventas.filter(r=>fechasFilt.includes(normFecha(r["Fecha"]))&&filtraSalaProm(r))||[],[data,fechasFilt,salaSel,promotorSel]);
   const cierresFilt = useMemo(()=>data?.cierres.filter(r=>fechasFilt.includes(normFecha(r["Fecha"]))&&filtraSalaProm(r))||[],[data,fechasFilt,salaSel,promotorSel]);
-  const b2b = useMemo(()=>(data?.ventasB2B||[]).filter(r=>{
-    if(!fechasFilt.includes(normFecha(r["Fecha"]))) return false;
-    const info = STORE_NBR_SALA[String(parseInt(r["Store Nbr"]||0))];
-    if(salaSel!=="todas" && info?.sala!==salaSel) return false;
-    if(promotorSel!=="todos" && info?.promotor!==promotorSel) return false;
+  // Cruza cada venta B2B con la sala marcada ese día para saber a qué promotor corresponde
+  // (ver asignarPromotorB2B). Reemplaza el mapeo fijo Store Nbr → promotor, que quedaba
+  // desactualizado cada vez que cambiaba el equipo o se sumaban tiendas nuevas.
+  const b2bAsignado = useMemo(()=>{
+    const filtradoFecha = (data?.ventasB2B||[]).filter(r=>fechasFilt.includes(normFecha(r["Fecha"])));
+    return asignarPromotorB2B(filtradoFecha, data?.marcaciones||[]);
+  },[data,fechasFilt]);
+
+  const b2b = useMemo(()=>b2bAsignado.filter(r=>{
+    if(salaSel!=="todas" && normNombre(r["Store Name"])!==normNombre(salaSel)) return false;
+    if(promotorSel!=="todos" && r._promotor!==promotorSel) return false;
     return true;
-  }),[data,fechasFilt,salaSel,promotorSel]);
+  }),[b2bAsignado,salaSel,promotorSel]);
 
   const promotores = useMemo(()=>[...new Set(marc.map(r=>r["Promotor"]))],[marc]);
-  const totalUnidades = useMemo(()=>vent.reduce((s,r)=>s+parseInt(r["Unidades"]||0),0),[vent]);
-  const totalComision = useMemo(()=>vent.reduce((s,r)=>s+parseInt(r["Comisión total"]||0),0),[vent]);
+  const totalUnidades = useMemo(()=>b2b.reduce((s,r)=>s+parseFloat(r["POS Qty"]||0),0),[b2b]);
+  const totalComision = useMemo(()=>b2b.reduce((s,r)=>s+parseFloat(r["POS Qty"]||0)*getComision(r["Item Desc 1"]),0),[b2b]);
 
   const porPromotor = useMemo(()=>{
     const m={};
@@ -595,29 +615,27 @@ function ChartsRenderer({ ventasPorProd, ventasPorProm, ready }) {
 
 /* ══════════════════ MÉTRICAS DE DESEMPEÑO ══════════════════ */
 function MetricasSection({ data, marcaciones, fechasFilt, chartsReady }) {
-  // Cruza B2B con mapping de salas para tener unidades/comisión por promotor,
-  // igual que ComisionesSection, pero sumando jornadas esperadas/cumplimiento y tendencia semanal.
+  // Cruza B2B (ya asignado por sala+fecha, ver asignarPromotorB2B) con marcaciones para
+  // jornadas/cumplimiento/tendencia. porFecha guarda TODA la venta detectada por día (para
+  // el gráfico de tendencia); totalQty/totalCom sólo suman días con jornada AM+PM completa,
+  // igual que ComisionesSection, para que el promedio por jornada sea consistente.
   const porPromotor = useMemo(()=>{
     const m = {};
     data.forEach(r=>{
-      const storeNbr = String(parseInt(r["Store Nbr"]||0));
-      const info = STORE_NBR_SALA[storeNbr];
-      if (!info) return;
+      if (!r._promotor) return;
       const qty = parseFloat(r["POS Qty"]||0);
       if (qty<=0) return;
       const com = qty*getComision(r["Item Desc 1"]);
       const fecha = normFecha(r["Fecha"]||"");
-      if (!m[info.promotor]) m[info.promotor] = { nombre:info.promotor, sala:info.sala, totalQty:0, totalCom:0, porFecha:{} };
-      m[info.promotor].totalQty += qty;
-      m[info.promotor].totalCom += com;
-      if (!m[info.promotor].porFecha[fecha]) m[info.promotor].porFecha[fecha] = { qty:0, com:0 };
-      m[info.promotor].porFecha[fecha].qty += qty;
-      m[info.promotor].porFecha[fecha].com += com;
+      if (!m[r._promotor]) m[r._promotor] = { nombre:r._promotor, sala: limpiaSala(r["Store Name"]), porFecha:{} };
+      if (!m[r._promotor].porFecha[fecha]) m[r._promotor].porFecha[fecha] = { qty:0, com:0 };
+      m[r._promotor].porFecha[fecha].qty += qty;
+      m[r._promotor].porFecha[fecha].com += com;
     });
     // Promotores con marcaciones pero sin ventas B2B igual deben aparecer en el ranking
     (marcaciones||[]).forEach(r=>{
       const nombre = r["Promotor"]; if (!nombre) return;
-      if (!m[nombre]) m[nombre] = { nombre, sala: r["Sala"]?.replace("Hiper Lider - ",""), totalQty:0, totalCom:0, porFecha:{} };
+      if (!m[nombre]) m[nombre] = { nombre, sala: limpiaSala(r["Sala"]), porFecha:{} };
     });
     Object.values(m).forEach(p=>{
       const dias = {};
@@ -629,7 +647,10 @@ function MetricasSection({ data, marcaciones, fechasFilt, chartsReady }) {
         if(r["Turno"]==="PM"&&r["Tipo"]==="Entrada") dias[k].pe=1;
         if(r["Turno"]==="PM"&&r["Tipo"]==="Salida")  dias[k].ps=1;
       });
-      p.jornadasCompletas = Object.values(dias).filter(d=>d.ae&&d.as&&d.pe&&d.ps).length;
+      const fechasTrabajadas = new Set(Object.entries(dias).filter(([,d])=>d.ae&&d.as&&d.pe&&d.ps).map(([f])=>f));
+      p.jornadasCompletas = fechasTrabajadas.size;
+      p.totalQty = Object.entries(p.porFecha).filter(([f])=>fechasTrabajadas.has(f)).reduce((s,[,d])=>s+d.qty,0);
+      p.totalCom = Object.entries(p.porFecha).filter(([f])=>fechasTrabajadas.has(f)).reduce((s,[,d])=>s+d.com,0);
     });
     return Object.values(m);
   },[data, marcaciones]);
@@ -758,41 +779,36 @@ function MetricasSection({ data, marcaciones, fechasFilt, chartsReady }) {
 function ComisionesSection({ data, marcaciones }) {
   const [expanded, setExpanded] = useState(null);
 
-  // Calcular comisiones por promotor cruzando B2B con mapping de salas
-  const porPromotor = useMemo(()=>{
+  // Calcular comisiones por promotor cruzando B2B (ya asignado por sala+fecha, ver
+  // asignarPromotorB2B) con marcaciones, para saber cuántas jornadas completó cada uno.
+  const { porPromotor, sinAsignar } = useMemo(()=>{
     const m = {};
+    let sinAsignarQty = 0, sinAsignarCom = 0;
 
-    // Agrupar ventas B2B por promotor via Store Nbr
     data.forEach(r=>{
-      const storeNbr = String(parseInt(r["Store Nbr"]||0));
-      const info = STORE_NBR_SALA[storeNbr];
-      if (!info) return;
-      const qty   = parseFloat(r["POS Qty"]||0);
+      const qty = parseFloat(r["POS Qty"]||0);
       if (qty <= 0) return;
-      const com   = qty * getComision(r["Item Desc 1"]);
+      const com = qty * getComision(r["Item Desc 1"]);
+      if (!r._promotor) { sinAsignarQty += qty; sinAsignarCom += com; return; }
       const fecha = normFecha(r["Fecha"]||"");
       const prod  = r["Item Desc 1"]||"";
 
-      if (!m[info.promotor]) m[info.promotor] = {
-        nombre: info.promotor,
-        sala: info.sala,
-        totalQty: 0,
-        totalCom: 0,
+      if (!m[r._promotor]) m[r._promotor] = {
+        nombre: r._promotor,
+        sala: limpiaSala(r["Store Name"]),
         jornadasCompletas: 0,
         pagoJornadas: 0,
         porFecha: {},
       };
 
-      m[info.promotor].totalQty += qty;
-      m[info.promotor].totalCom += com;
-
-      if (!m[info.promotor].porFecha[fecha]) m[info.promotor].porFecha[fecha] = { qty:0, com:0, prods:[] };
-      m[info.promotor].porFecha[fecha].qty += qty;
-      m[info.promotor].porFecha[fecha].com += com;
-      m[info.promotor].porFecha[fecha].prods.push({ prod, qty, com });
+      if (!m[r._promotor].porFecha[fecha]) m[r._promotor].porFecha[fecha] = { qty:0, com:0, prods:[] };
+      m[r._promotor].porFecha[fecha].qty += qty;
+      m[r._promotor].porFecha[fecha].com += com;
+      m[r._promotor].porFecha[fecha].prods.push({ prod, qty, com });
     });
 
-    // Calcular jornadas completas - solo días con AM+PM completo en marcaciones
+    // Jornadas completas (AM+PM) y totales: solo se cobra comisión B2B de días
+    // efectivamente trabajados, para que el resumen y el detalle por día siempre calcen.
     Object.values(m).forEach(p=>{
       const dias = {};
       (marcaciones||[])
@@ -813,9 +829,16 @@ function ComisionesSection({ data, marcaciones }) {
       p.pagoJornadas = p.jornadasCompletas * PAGO_JORNADA;
       Object.keys(p.porFecha).forEach(f=>{ if(!fechasTrabajadas.has(f)) delete p.porFecha[f]; });
       fechasTrabajadas.forEach(f=>{ if(!p.porFecha[f]) p.porFecha[f]={qty:0,com:0,prods:[]}; });
+      // totalQty/totalCom se recalculan desde porFecha ya filtrado, para que el header
+      // (que muestra estos totales) siempre sea consistente con el detalle expandido.
+      p.totalQty = Object.values(p.porFecha).reduce((s,d)=>s+d.qty,0);
+      p.totalCom = Object.values(p.porFecha).reduce((s,d)=>s+d.com,0);
     });
 
-    return Object.values(m).sort((a,b)=>(b.totalCom+b.pagoJornadas)-(a.totalCom+a.pagoJornadas));
+    return {
+      porPromotor: Object.values(m).sort((a,b)=>(b.totalCom+b.pagoJornadas)-(a.totalCom+a.pagoJornadas)),
+      sinAsignar: { qty: sinAsignarQty, com: sinAsignarCom },
+    };
   }, [data, marcaciones]);
 
   if (!porPromotor.length) return null;
@@ -838,6 +861,13 @@ function ComisionesSection({ data, marcaciones }) {
         </div>
         <TrendingUp size={40} style={{opacity:.3}}/>
       </div>
+
+      {sinAsignar.qty > 0 && (
+        <div style={{background:"#FEF3E2",border:"1px solid #FDE4B8",borderRadius:12,padding:"10px 14px",marginBottom:14,fontSize:12,color:"#B45309",display:"flex",gap:8,alignItems:"flex-start"}}>
+          <AlertCircle size={14} style={{flexShrink:0,marginTop:1}}/>
+          <span>{Math.round(sinAsignar.qty)} unidades ({fmtCLP(sinAsignar.com)}) de venta B2B no se pudieron asociar a un promotor: la tienda no tiene ninguna marcación ese día, o marcaron dos promotores distintos en la misma sala.</span>
+        </div>
+      )}
 
       {/* Ranking */}
       <div className="card" style={{padding:0}}>
@@ -929,6 +959,8 @@ function ComisionesSection({ data, marcaciones }) {
 function VentasB2BSection({ data }) {
   const [tiendaSel, setTiendaSel] = useState("todas");
   const [fechaB2B, setFechaB2B] = useState("todas");
+  const [promotorSelB2B, setPromotorSelB2B] = useState("todos");
+  const [productoSel, setProductoSel] = useState("todos");
 
   const PROD_MAP = {
     "LIMPIA PISO LAVANDA":  "Limpiapisos Lavanda",
@@ -945,11 +977,16 @@ function VentasB2BSection({ data }) {
     return [...new Set(base.filter(r=>parseFloat(r["POS Qty"]||0)>0).map(r=>r["Store Name"]).filter(Boolean))].sort();
   },[data, fechaB2B]);
 
+  const promotoresB2B = useMemo(()=>[...new Set(data.map(r=>r._promotor).filter(Boolean))].sort(),[data]);
+  const productosB2B = useMemo(()=>[...new Set(data.map(r=>PROD_MAP[r["Item Desc 1"]]||r["Item Desc 1"]).filter(Boolean))].sort(),[data]);
+
   const rows = useMemo(()=>{
     let r = fechaB2B==="todas" ? data : data.filter(x=>x["Fecha"]===fechaB2B);
     if (tiendaSel!=="todas") r = r.filter(x=>x["Store Name"]===tiendaSel);
+    if (promotorSelB2B!=="todos") r = r.filter(x=>x._promotor===promotorSelB2B);
+    if (productoSel!=="todos") r = r.filter(x=>(PROD_MAP[x["Item Desc 1"]]||x["Item Desc 1"])===productoSel);
     return r;
-  },[data, fechaB2B, tiendaSel]);
+  },[data, fechaB2B, tiendaSel, promotorSelB2B, productoSel]);
 
   const handleFechaB2B = (f) => { setFechaB2B(f); setTiendaSel("todas"); };
 
@@ -1018,6 +1055,19 @@ function VentasB2BSection({ data }) {
           ))}
         </div>
       )}
+
+      {/* Filtro por promotor y producto */}
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14,alignItems:"center"}}>
+        <Users size={14} color="#64748B"/>
+        <select className="sel-filter" value={promotorSelB2B} onChange={e=>setPromotorSelB2B(e.target.value)}>
+          <option value="todos">Todos los promotores</option>
+          {promotoresB2B.map(p=><option key={p} value={p}>{p}</option>)}
+        </select>
+        <select className="sel-filter" value={productoSel} onChange={e=>setProductoSel(e.target.value)}>
+          <option value="todos">Todos los productos</option>
+          {productosB2B.map(p=><option key={p} value={p}>{p}</option>)}
+        </select>
+      </div>
 
       {/* KPIs B2B */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:10,marginBottom:14}}>
@@ -1089,34 +1139,35 @@ function VentasB2BSection({ data }) {
       </div>
 
       {/* Tabla completa */}
-      <div className="card" style={{marginTop:12}}>
-        <div style={{padding:"12px 16px",borderBottom:"1px solid #F1F5F9",fontWeight:700,fontSize:13}}>
-          Detalle por tienda y producto
-        </div>
-        <div style={{overflowX:"auto"}}>
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Fecha</th>
-                <th>Tienda</th>
-                <th>Ciudad</th>
-                <th>Producto</th>
-                <th style={{textAlign:"right"}}>Unidades</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.filter(r=>parseFloat(r["POS Qty"]||0)>0).sort((a,b)=>parseFloat(b["POS Qty"]||0)-parseFloat(a["POS Qty"]||0)).map((r,i)=>(
-                <tr key={i}>
-                  <td style={{fontSize:12,whiteSpace:"nowrap"}}>{r["Fecha"]}</td>
-                  <td style={{fontSize:12,fontWeight:600}}>{r["Store Name"]}</td>
-                  <td style={{fontSize:12,color:"#64748B"}}>{r["City"]}</td>
-                  <td style={{fontSize:12}}>{PROD_MAP[r["Item Desc 1"]]||r["Item Desc 1"]}</td>
-                  <td style={{fontSize:12,textAlign:"right",fontWeight:700,color:"#0E6F76"}}>{Math.round(parseFloat(r["POS Qty"]||0))}</td>
+      <div style={{marginTop:12}}>
+        <Collapsible title="Detalle por tienda y producto" count={rows.filter(r=>parseFloat(r["POS Qty"]||0)>0).length}>
+          <div style={{overflowX:"auto"}}>
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Tienda</th>
+                  <th>Ciudad</th>
+                  <th>Promotor</th>
+                  <th>Producto</th>
+                  <th style={{textAlign:"right"}}>Unidades</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {rows.filter(r=>parseFloat(r["POS Qty"]||0)>0).sort((a,b)=>parseFloat(b["POS Qty"]||0)-parseFloat(a["POS Qty"]||0)).map((r,i)=>(
+                  <tr key={i}>
+                    <td style={{fontSize:12,whiteSpace:"nowrap"}}>{r["Fecha"]}</td>
+                    <td style={{fontSize:12,fontWeight:600}}>{r["Store Name"]}</td>
+                    <td style={{fontSize:12,color:"#64748B"}}>{r["City"]}</td>
+                    <td style={{fontSize:12,color: r._promotor?"#0B2A2D":"#B45309"}}>{r._promotor||"Sin asignar"}</td>
+                    <td style={{fontSize:12}}>{PROD_MAP[r["Item Desc 1"]]||r["Item Desc 1"]}</td>
+                    <td style={{fontSize:12,textAlign:"right",fontWeight:700,color:"#0E6F76"}}>{Math.round(parseFloat(r["POS Qty"]||0))}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Collapsible>
       </div>
     </>
   );
