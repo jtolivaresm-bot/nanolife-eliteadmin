@@ -185,9 +185,9 @@ function Dashboard({ onLogout }) {
   const fechasDisponibles = useMemo(()=>{
     if(!data) return [];
     const s=new Set([
-      ...data.marcaciones.map(r=>r["Fecha"]),
-      ...data.ventas.map(r=>r["Fecha"]),
-      ...(data.ventasB2B||[]).map(r=>r["Fecha"]),
+      ...data.marcaciones.map(r=>normFecha(r["Fecha"])),
+      ...data.ventas.map(r=>normFecha(r["Fecha"])),
+      ...(data.ventasB2B||[]).map(r=>normFecha(r["Fecha"])),
     ]);
     return [...s].filter(Boolean).sort().reverse();
   },[data]);
@@ -201,10 +201,10 @@ function Dashboard({ onLogout }) {
     return [fechaSel];
   },[fechaSel,fechasDisponibles,hoyISO]);
 
-  const marc = useMemo(()=>data?.marcaciones.filter(r=>fechasFilt.includes(r["Fecha"]))||[],[data,fechasFilt]);
-  const vent = useMemo(()=>data?.ventas.filter(r=>fechasFilt.includes(r["Fecha"]))||[],[data,fechasFilt]);
-  const cierresFilt = useMemo(()=>data?.cierres.filter(r=>fechasFilt.includes(r["Fecha"]))||[],[data,fechasFilt]);
-  const b2b = useMemo(()=>(data?.ventasB2B||[]).filter(r=>fechasFilt.includes(r["Fecha"])),[data,fechasFilt]);
+  const marc = useMemo(()=>data?.marcaciones.filter(r=>fechasFilt.includes(normFecha(r["Fecha"])))||[],[data,fechasFilt]);
+  const vent = useMemo(()=>data?.ventas.filter(r=>fechasFilt.includes(normFecha(r["Fecha"])))||[],[data,fechasFilt]);
+  const cierresFilt = useMemo(()=>data?.cierres.filter(r=>fechasFilt.includes(normFecha(r["Fecha"])))||[],[data,fechasFilt]);
+  const b2b = useMemo(()=>(data?.ventasB2B||[]).filter(r=>fechasFilt.includes(normFecha(r["Fecha"]))),[data,fechasFilt]);
 
   const promotores = useMemo(()=>[...new Set(marc.map(r=>r["Promotor"]))],[marc]);
   const totalUnidades = useMemo(()=>vent.reduce((s,r)=>s+parseInt(r["Unidades"]||0),0),[vent]);
@@ -269,7 +269,7 @@ function Dashboard({ onLogout }) {
           <div style={{display:"flex",alignItems:"center",gap:8,marginTop:16,flexWrap:"wrap"}}>
             <Calendar size={15} color="#64748B"/>
             <button className={`fecha-btn ${fechaSel==="todo"?"on":""}`} onClick={()=>setFechaSel("todo")}>Todos</button>
-            {fechasDisponibles.filter(f=>data.marcaciones.some(r=>r["Fecha"]===f)).map(f=>{
+            {fechasDisponibles.filter(f=>data.marcaciones.some(r=>normFecha(r["Fecha"])===f)).map(f=>{
               const d = new Date(f+"T12:00");
               const label = isNaN(d) ? f : d.toLocaleDateString("es-CL",{weekday:"short",day:"numeric",month:"short"});
               return (

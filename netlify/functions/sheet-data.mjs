@@ -64,47 +64,24 @@ export const handler = async () => {
     "Access-Control-Allow-Origin": "*",
   };
 
-  // DIAGNÓSTICO: ver qué variables hay disponibles
-  const envKeys = Object.keys(process.env).filter(k => k.startsWith("GOOGLE") || k.startsWith("NETLIFY"));
-  const keyExists = !!process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
-  const keyLength = process.env.GOOGLE_SERVICE_ACCOUNT_KEY?.length || 0;
-  const keyStart = process.env.GOOGLE_SERVICE_ACCOUNT_KEY?.slice(0, 50) || "VACÍO";
-  const sheetIdExists = !!process.env.GOOGLE_SHEET_ID;
-
-  console.log("DIAGNÓSTICO sheet-data:");
-  console.log("- Variables GOOGLE/NETLIFY:", envKeys);
-  console.log("- GOOGLE_SERVICE_ACCOUNT_KEY existe:", keyExists);
-  console.log("- GOOGLE_SERVICE_ACCOUNT_KEY length:", keyLength);
-  console.log("- GOOGLE_SERVICE_ACCOUNT_KEY inicio:", keyStart);
-  console.log("- GOOGLE_SHEET_ID existe:", sheetIdExists);
-
-  if (!keyExists) {
-    return {
-      statusCode: 200,
-      headers,
-      body: JSON.stringify({
-        diagnostico: {
-          envKeys,
-          keyExists,
-          keyLength,
-          sheetIdExists,
-          mensaje: "GOOGLE_SERVICE_ACCOUNT_KEY no está disponible en process.env"
-        }
-      })
-    };
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_KEY || !process.env.GOOGLE_SHEET_ID) {
+    console.error("sheet-data: faltan variables de entorno GOOGLE_SERVICE_ACCOUNT_KEY o GOOGLE_SHEET_ID");
+    return { statusCode: 500, headers, body: JSON.stringify({ error: "Configuración del servidor incompleta" }) };
   }
 
   try {
     const token = await getToken(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
     const sheetId = process.env.GOOGLE_SHEET_ID;
 
+    const logFallo = range => err => { console.error(`sheet-data: fallo leyendo ${range}:`, err.message); return []; };
+
     const [marcRows, ventasRows, cierresRows, fotosRows, audiosRows, b2bRows] = await Promise.all([
       readSheet(token, sheetId, "Marcaciones!A:L"),
       readSheet(token, sheetId, "Ventas!A:J"),
       readSheet(token, sheetId, "Cierres!A:H"),
-      readSheet(token, sheetId, "Fotos!A:E").catch(()=>[]),
-      readSheet(token, sheetId, "Audios!A:E").catch(()=>[]),
-      readSheet(token, sheetId, "VentasB2B!A:O").catch(()=>[]),
+      readSheet(token, sheetId, "Fotos!A:E").catch(logFallo("Fotos")),
+      readSheet(token, sheetId, "Audios!A:E").catch(logFallo("Audios")),
+      readSheet(token, sheetId, "VentasB2B!A:O").catch(logFallo("VentasB2B")),
     ]);
 
     return {
@@ -122,6 +99,6 @@ export const handler = async () => {
     };
   } catch(err) {
     console.error("sheet-data error:", err.message);
-    return { statusCode:500, headers, body: JSON.stringify({ error: err.message, keyLength, keyStart }) };
+    return { statusCode:500, headers, body: JSON.stringify({ error: err.message }) };
   }
 };
