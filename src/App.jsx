@@ -41,6 +41,7 @@ const normFecha = f => {
   }
   return f;
 };
+const limpiaSala = s => s?.replace("Hiper Lider - ","").replace("Lider Express - ","") || s;
 const fmtFecha = f => {
   if (!f) return "—";
   const iso = normFecha(f);
@@ -115,6 +116,8 @@ body{background:#F0F4F3;font-family:system-ui,sans-serif;color:#0B2A2D;min-heigh
 @keyframes spin{to{transform:rotate(360deg)}}
 .fecha-btn{padding:6px 14px;border-radius:99px;border:1px solid #E2E8F0;background:#fff;font-size:13px;cursor:pointer;font-family:system-ui;color:#0B2A2D}
 .fecha-btn.on{background:#0E6F76;color:#fff;border-color:#0E6F76;font-weight:600}
+.sel-filter{padding:6px 10px;border-radius:8px;border:1px solid #E2E8F0;background:#fff;font-size:13px;font-family:system-ui;color:#0B2A2D;cursor:pointer}
+.sel-filter:focus{outline:none;border-color:#0E6F76}
 .gps-link{display:inline-flex;align-items:center;gap:4px;color:#0E6F76;font-size:12px;text-decoration:none}
 .gps-link:hover{text-decoration:underline}
 .prom-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
@@ -153,12 +156,27 @@ export default function App() {
   return <div><style>{CSS}</style><Dashboard onLogout={()=>{sessionStorage.removeItem("nl_admin");setAuth(false);}}/></div>;
 }
 
+function Collapsible({ title, count, icon, children }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="card">
+      <div className="card-header" onClick={()=>setOpen(!open)}>
+        <h3>{icon}{title}{count!=null && <span style={{fontWeight:400,fontSize:12,color:"#94A3B8"}}>({count})</span>}</h3>
+        {open?<ChevronUp size={16} color="#94A3B8"/>:<ChevronDown size={16} color="#94A3B8"/>}
+      </div>
+      {open && <div className="card-body" style={{padding:0}}>{children}</div>}
+    </div>
+  );
+}
+
 function Dashboard({ onLogout }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [updatedAt, setUpdatedAt] = useState(null);
   const [fechaSel, setFechaSel] = useState("todo");
+  const [salaSel, setSalaSel] = useState("todas");
+  const [promotorSel, setPromotorSel] = useState("todos");
   const [chartsReady, setChartsReady] = useState(false);
 
   async function fetchData() {
@@ -201,10 +219,30 @@ function Dashboard({ onLogout }) {
     return [fechaSel];
   },[fechaSel,fechasDisponibles,hoyISO]);
 
-  const marc = useMemo(()=>data?.marcaciones.filter(r=>fechasFilt.includes(normFecha(r["Fecha"])))||[],[data,fechasFilt]);
-  const vent = useMemo(()=>data?.ventas.filter(r=>fechasFilt.includes(normFecha(r["Fecha"])))||[],[data,fechasFilt]);
-  const cierresFilt = useMemo(()=>data?.cierres.filter(r=>fechasFilt.includes(normFecha(r["Fecha"])))||[],[data,fechasFilt]);
-  const b2b = useMemo(()=>(data?.ventasB2B||[]).filter(r=>fechasFilt.includes(normFecha(r["Fecha"]))),[data,fechasFilt]);
+  const salasDisponibles = useMemo(()=>{
+    if(!data) return [];
+    return [...new Set(data.marcaciones.map(r=>limpiaSala(r["Sala"])).filter(Boolean))].sort();
+  },[data]);
+
+  const promotoresDisponibles = useMemo(()=>{
+    if(!data) return [];
+    return [...new Set(data.marcaciones.map(r=>r["Promotor"]).filter(Boolean))].sort();
+  },[data]);
+
+  const filtraSalaProm = r =>
+    (salaSel==="todas" || limpiaSala(r["Sala"])===salaSel) &&
+    (promotorSel==="todos" || r["Promotor"]===promotorSel);
+
+  const marc = useMemo(()=>data?.marcaciones.filter(r=>fechasFilt.includes(normFecha(r["Fecha"]))&&filtraSalaProm(r))||[],[data,fechasFilt,salaSel,promotorSel]);
+  const vent = useMemo(()=>data?.ventas.filter(r=>fechasFilt.includes(normFecha(r["Fecha"]))&&filtraSalaProm(r))||[],[data,fechasFilt,salaSel,promotorSel]);
+  const cierresFilt = useMemo(()=>data?.cierres.filter(r=>fechasFilt.includes(normFecha(r["Fecha"]))&&filtraSalaProm(r))||[],[data,fechasFilt,salaSel,promotorSel]);
+  const b2b = useMemo(()=>(data?.ventasB2B||[]).filter(r=>{
+    if(!fechasFilt.includes(normFecha(r["Fecha"]))) return false;
+    const info = STORE_NBR_SALA[String(parseInt(r["Store Nbr"]||0))];
+    if(salaSel!=="todas" && info?.sala!==salaSel) return false;
+    if(promotorSel!=="todos" && info?.promotor!==promotorSel) return false;
+    return true;
+  }),[data,fechasFilt,salaSel,promotorSel]);
 
   const promotores = useMemo(()=>[...new Set(marc.map(r=>r["Promotor"]))],[marc]);
   const totalUnidades = useMemo(()=>vent.reduce((s,r)=>s+parseInt(r["Unidades"]||0),0),[vent]);
@@ -279,6 +317,23 @@ function Dashboard({ onLogout }) {
               );
             })}
             <span style={{fontSize:12,color:"#94A3B8"}}>{marc.length} marcaciones</span>
+          </div>
+
+          {/* FILTROS SALA / PROMOTOR */}
+          <div style={{display:"flex",alignItems:"center",gap:8,marginTop:10,flexWrap:"wrap"}}>
+            <Store size={15} color="#64748B"/>
+            <select className="sel-filter" value={salaSel} onChange={e=>setSalaSel(e.target.value)}>
+              <option value="todas">Todas las salas</option>
+              {salasDisponibles.map(s=><option key={s} value={s}>{s}</option>)}
+            </select>
+            <Users size={15} color="#64748B"/>
+            <select className="sel-filter" value={promotorSel} onChange={e=>setPromotorSel(e.target.value)}>
+              <option value="todos">Todos los promotores</option>
+              {promotoresDisponibles.map(p=><option key={p} value={p}>{p}</option>)}
+            </select>
+            {(salaSel!=="todas"||promotorSel!=="todos") && (
+              <button className="fecha-btn" onClick={()=>{setSalaSel("todas");setPromotorSel("todos");}}>Limpiar filtros</button>
+            )}
           </div>
 
           {/* KPIs */}
@@ -383,7 +438,7 @@ function Dashboard({ onLogout }) {
 
           {/* TABLA MARCACIONES */}
           <div className="sec-title">Registro de marcaciones</div>
-          <div className="card">
+          <Collapsible title="Marcaciones" count={marc.length}>
             <div style={{overflowX:"auto"}}>
               <table className="table">
                 <thead>
@@ -418,7 +473,7 @@ function Dashboard({ onLogout }) {
                 </tbody>
               </table>
             </div>
-          </div>
+          </Collapsible>
 
           {/* VENTAS B2B LIDER */}
           {b2b.length > 0 && <VentasB2BSection data={b2b}/>}
@@ -427,9 +482,9 @@ function Dashboard({ onLogout }) {
           {/* FOTOS DE GÓNDOLA */}
           {data.fotos?.length > 0 && <>
             <div className="sec-title">Fotos de góndola</div>
-            <div className="card">
+            <Collapsible title="Fotos de góndola" count={data.fotos.filter(f=>fechasFilt.includes(normFecha(f["Fecha"]||""))).length}>
               <div style={{padding:16,display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:12}}>
-                {data.fotos.filter(f=>fechasFilt.includes(f["Fecha"]||"")).map((f,i)=>{
+                {data.fotos.filter(f=>fechasFilt.includes(normFecha(f["Fecha"]||""))).map((f,i)=>{
                   const fileId = getDriveId(f["View URL"]||f["URL"]);
                   const imgSrc = fileId ? `https://drive.google.com/thumbnail?id=${fileId}&sz=w400` : f["URL"];
                   const viewUrl = f["View URL"]||f["URL"];
@@ -454,17 +509,17 @@ function Dashboard({ onLogout }) {
                   );
                 })}
               </div>
-              {data.fotos.filter(f=>fechasFilt.includes(f["Fecha"]||"")).length===0 &&
+              {data.fotos.filter(f=>fechasFilt.includes(normFecha(f["Fecha"]||""))).length===0 &&
                 <div className="empty">Sin fotos para el período seleccionado</div>}
-            </div>
+            </Collapsible>
           </>}
 
           {/* AUDIOS DE CIERRE */}
           {data.audios?.length > 0 && <>
             <div className="sec-title">Audios de cierre</div>
-            <div className="card">
+            <Collapsible title="Audios de cierre" count={data.audios.filter(f=>fechasFilt.includes(normFecha(f["Fecha"]||""))).length}>
               <div style={{padding:"8px 0"}}>
-                {data.audios.filter(f=>fechasFilt.includes(f["Fecha"]||"")).map((a,i)=>(
+                {data.audios.filter(f=>fechasFilt.includes(normFecha(f["Fecha"]||""))).map((a,i)=>(
                   <div key={i} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 16px",borderBottom:"1px solid #F1F5F9"}}>
                     <div style={{width:36,height:36,borderRadius:"50%",background:"#F0FDF4",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
                       <Mic size={16} color="#15803D"/>
@@ -478,16 +533,18 @@ function Dashboard({ onLogout }) {
                     <AudioPlayer url={a["View URL"]||a["URL"]}/>
                   </div>
                 ))}
-                {data.audios.filter(f=>fechasFilt.includes(f["Fecha"]||"")).length===0 &&
+                {data.audios.filter(f=>fechasFilt.includes(normFecha(f["Fecha"]||""))).length===0 &&
                   <div className="empty">Sin audios para el período seleccionado</div>}
               </div>
-            </div>
+            </Collapsible>
           </>}
 
           {/* DETALLE VENTAS */}
           {porPromotor.filter(p=>p.vent.length>0).length>0 && <>
             <div className="sec-title">Detalle de ventas por promotor</div>
-            {porPromotor.filter(p=>p.vent.length>0).map(p=><PromoterCard key={p.nombre} promotor={p}/>)}
+            <Collapsible title="Detalle de ventas por promotor" count={porPromotor.filter(p=>p.vent.length>0).length}>
+              {porPromotor.filter(p=>p.vent.length>0).map(p=><PromoterCard key={p.nombre} promotor={p}/>)}
+            </Collapsible>
           </>}
         </>}
       </div>
