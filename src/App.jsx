@@ -436,6 +436,8 @@ function Dashboard({ onLogout }) {
 
           <ChartsRenderer ventasPorProd={ventasPorProd} ventasPorProm={ventasPorProm} ready={chartsReady&&vent.length>0}/>
 
+          <MetricasSection data={b2b} marcaciones={data?.marcaciones||[]} fechasFilt={fechasFilt} chartsReady={chartsReady}/>
+
           {/* TABLA MARCACIONES */}
           <div className="sec-title">Registro de marcaciones</div>
           <Collapsible title="Marcaciones" count={marc.length}>
@@ -589,6 +591,146 @@ function ChartsRenderer({ ventasPorProd, ventasPorProm, ready }) {
   },[ventasPorProd,ventasPorProm,ready]);
 
   return null;
+}
+
+/* ══════════════════ MÉTRICAS DE DESEMPEÑO ══════════════════ */
+function MetricasSection({ data, marcaciones, fechasFilt, chartsReady }) {
+  // Cruza B2B con mapping de salas para tener unidades/comisión por promotor,
+  // igual que ComisionesSection, pero sumando jornadas esperadas/cumplimiento y tendencia semanal.
+  const porPromotor = useMemo(()=>{
+    const m = {};
+    data.forEach(r=>{
+      const storeNbr = String(parseInt(r["Store Nbr"]||0));
+      const info = STORE_NBR_SALA[storeNbr];
+      if (!info) return;
+      const qty = parseFloat(r["POS Qty"]||0);
+      if (qty<=0) return;
+      const com = qty*getComision(r["Item Desc 1"]);
+      const fecha = normFecha(r["Fecha"]||"");
+      if (!m[info.promotor]) m[info.promotor] = { nombre:info.promotor, sala:info.sala, totalQty:0, totalCom:0, porFecha:{} };
+      m[info.promotor].totalQty += qty;
+      m[info.promotor].totalCom += com;
+      if (!m[info.promotor].porFecha[fecha]) m[info.promotor].porFecha[fecha] = { qty:0, com:0 };
+      m[info.promotor].porFecha[fecha].qty += qty;
+      m[info.promotor].porFecha[fecha].com += com;
+    });
+    // Promotores con marcaciones pero sin ventas B2B igual deben aparecer en el ranking
+    (marcaciones||[]).forEach(r=>{
+      const nombre = r["Promotor"]; if (!nombre) return;
+      if (!m[nombre]) m[nombre] = { nombre, sala: r["Sala"]?.replace("Hiper Lider - ",""), totalQty:0, totalCom:0, porFecha:{} };
+    });
+    Object.values(m).forEach(p=>{
+      const dias = {};
+      (marcaciones||[]).filter(r=>r["Promotor"]===p.nombre).forEach(r=>{
+        const k = normFecha(r["Fecha"]||""); if (!k) return;
+        if (!dias[k]) dias[k]={ae:0,as:0,pe:0,ps:0};
+        if(r["Turno"]==="AM"&&r["Tipo"]==="Entrada") dias[k].ae=1;
+        if(r["Turno"]==="AM"&&r["Tipo"]==="Salida")  dias[k].as=1;
+        if(r["Turno"]==="PM"&&r["Tipo"]==="Entrada") dias[k].pe=1;
+        if(r["Turno"]==="PM"&&r["Tipo"]==="Salida")  dias[k].ps=1;
+      });
+      p.jornadasCompletas = Object.values(dias).filter(d=>d.ae&&d.as&&d.pe&&d.ps).length;
+    });
+    return Object.values(m);
+  },[data, marcaciones]);
+
+  const jornadasEsperadas = fechasFilt.length || 1;
+
+  const ranking = useMemo(()=>porPromotor
+    .map(p=>{
+      const pagoJornadas = p.jornadasCompletas*PAGO_JORNADA;
+      return {
+        ...p,
+        pagoJornadas,
+        total: p.totalCom + pagoJornadas,
+        cumplimiento: Math.min(100, Math.round((p.jornadasCompletas/jornadasEsperadas)*100)),
+      };
+    })
+    .sort((a,b)=>b.total-a.total),
+  [porPromotor, jornadasEsperadas]);
+
+  // Tendencia semanal: agrupa todas las fechas (de todos los promotores) por semana ISO (lunes)
+  const tendenciaSemanal = useMemo(()=>{
+    const porSemana = {};
+    porPromotor.forEach(p=>{
+      Object.entries(p.porFecha).forEach(([fecha,v])=>{
+        const d = new Date(fecha+"T12:00");
+        if (isNaN(d)) return;
+        const dow = (d.getDay()+6)%7;
+        const monday = new Date(d); monday.setDate(d.getDate()-dow);
+        const key = monday.toISOString().slice(0,10);
+        if (!porSemana[key]) porSemana[key] = { qty:0, com:0 };
+        porSemana[key].qty += v.qty;
+        porSemana[key].com += v.com;
+      });
+    });
+    return Object.entries(porSemana)
+      .sort(([a],[b])=>a.localeCompare(b))
+      .map(([k,v])=>({ semana: new Date(k+"T12:00").toLocaleDateString("es-CL",{day:"numeric",month:"short"}), ...v }));
+  },[porPromotor]);
+
+  useEffect(()=>{
+    if (!chartsReady || !window.Chart) return;
+    const cv = document.getElementById("chartTendencia");
+    if (!cv || tendenciaSemanal.length===0) return;
+    if (cv._ch) cv._ch.destroy();
+    cv._ch = new window.Chart(cv, {
+      type:"line",
+      data:{
+        labels: tendenciaSemanal.map(t=>t.semana),
+        datasets:[{ label:"Unidades vendidas", data: tendenciaSemanal.map(t=>t.qty), borderColor:"#0E6F76", backgroundColor:"#0E6F7622", tension:.3, fill:true }],
+      },
+      options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{ y:{ beginAtZero:true } } },
+    });
+    return ()=>{ try{ cv._ch?.destroy(); }catch(e){} };
+  },[chartsReady, tendenciaSemanal]);
+
+  if (!ranking.length) return null;
+
+  return (
+    <>
+      <div className="sec-title" style={{marginTop:20}}>Métricas de desempeño</div>
+      <div className="card" style={{padding:0,overflowX:"auto"}}>
+        <table className="table">
+          <thead>
+            <tr><th>#</th><th>Promotor</th><th>Sala</th><th>Jornadas</th><th>Cumplimiento</th><th>Unidades B2B</th><th>Comisión B2B</th><th>Total</th></tr>
+          </thead>
+          <tbody>
+            {ranking.map((p,i)=>(
+              <tr key={p.nombre}>
+                <td style={{fontWeight:700,color:"#94A3B8"}}>{i+1}</td>
+                <td style={{fontWeight:600,fontSize:13}}>{p.nombre}</td>
+                <td style={{fontSize:12,color:"#64748B"}}>{p.sala}</td>
+                <td style={{fontSize:13,whiteSpace:"nowrap"}}>{p.jornadasCompletas}/{jornadasEsperadas}</td>
+                <td>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    <div style={{width:60,height:6,borderRadius:3,background:"#E2E8F0",overflow:"hidden",flexShrink:0}}>
+                      <div style={{width:`${p.cumplimiento}%`,height:"100%",background:p.cumplimiento>=80?"#16A34A":p.cumplimiento>=50?"#F5A623":"#DC2626"}}/>
+                    </div>
+                    <span style={{fontSize:12,color:"#64748B"}}>{p.cumplimiento}%</span>
+                  </div>
+                </td>
+                <td style={{fontSize:13}}>{p.totalQty}</td>
+                <td style={{fontSize:13}}>{fmtCLP(p.totalCom)}</td>
+                <td style={{fontWeight:700,color:"#0E6F76",whiteSpace:"nowrap"}}>{fmtCLP(p.total)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {tendenciaSemanal.length>1 && (
+        <div className="card" style={{marginTop:12}}>
+          <div style={{padding:"12px 16px",borderBottom:"1px solid #F1F5F9",fontWeight:700,fontSize:13}}>Tendencia semanal · unidades vendidas</div>
+          <div style={{padding:16}}>
+            <div style={{position:"relative",height:220}}>
+              <canvas id="chartTendencia" role="img" aria-label="Tendencia semanal de unidades vendidas"/>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
 }
 
 /* ══════════════════ COMISIONES POR PROMOTOR ══════════════════ */
