@@ -75,13 +75,19 @@ export const handler = async () => {
 
     const logFallo = range => err => { console.error(`sheet-data: fallo leyendo ${range}:`, err.message); return []; };
 
-    const [marcRows, ventasRows, cierresRows, fotosRows, audiosRows, b2bRows] = await Promise.all([
+    // Salas vive en el sheet de Configuración (mismo que usa la app de promotores), no
+    // en el de Ventas/Marcaciones. Trae "codigo" (= Store Nbr del B2B) por sala, para
+    // poder cruzar ventas B2B con marcaciones sin depender de un mapeo hardcodeado.
+    const configSheetId = process.env.GOOGLE_CONFIG_SHEET_ID;
+
+    const [marcRows, ventasRows, cierresRows, fotosRows, audiosRows, b2bRows, salaRows] = await Promise.all([
       readSheet(token, sheetId, "Marcaciones!A:L"),
       readSheet(token, sheetId, "Ventas!A:J"),
       readSheet(token, sheetId, "Cierres!A:H"),
       readSheet(token, sheetId, "Fotos!A:E").catch(logFallo("Fotos")),
       readSheet(token, sheetId, "Audios!A:E").catch(logFallo("Audios")),
       readSheet(token, sheetId, "VentasB2B!A:O").catch(logFallo("VentasB2B")),
+      configSheetId ? readSheet(token, configSheetId, "Salas!A:Z").catch(logFallo("Salas")) : Promise.resolve([]),
     ]);
 
     return {
@@ -94,6 +100,7 @@ export const handler = async () => {
         fotos: toObjects(fotosRows),
         audios: toObjects(audiosRows),
         ventasB2B: toObjects(b2bRows),
+        salas: toObjects(salaRows),
         updatedAt: new Date().toISOString(),
       }),
     };

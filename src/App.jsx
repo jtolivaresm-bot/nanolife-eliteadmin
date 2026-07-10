@@ -33,25 +33,39 @@ const limpiaSala = s => s?.replace("Hiper Lider - ","").replace("Lider Express -
 const normNombre = s => (s||"").toString().normalize("NFD").replace(/[̀-ͯ]/g,"").toUpperCase().trim();
 
 // Asigna cada fila de venta B2B al promotor correspondiente cruzando por sala+fecha
-// (no por Store Nbr fijo, que quedaba desactualizado a medida que crecía el equipo).
-// "Store Name" (B2B) se compara contra la "Sala" marcada por el promotor ese mismo día;
-// si más de un promotor marcó en esa misma sala normalizada ese día, se deja sin asignar
-// en vez de adivinar.
-function asignarPromotorB2B(b2bRows, marcaciones) {
-  const porFechaSala = {};
+// (no por Store Nbr fijo hardcodeado en el frontend, que quedaba desactualizado a medida
+// que crecía el equipo). El "Sala" de la marcación es el nombre completo (ej. "Hiper Lider
+// - Buenaventura 1770", igual a sala.nombre en la app de promotores) — NO el Store Name
+// oficial de Lider (ej. "VITACURA"), por eso el cruce va vía la hoja Salas del sheet de
+// Configuración: nombre de sala → codigo (que sí es igual al Store Nbr del B2B).
+
+// Mapa nombre de sala (normalizado, sin prefijo "Hiper Lider - "/"Lider Express - ")
+// → codigo/Store Nbr, desde la hoja Salas.
+function construirMapaSalaCodigo(salas) {
+  const m = {};
+  (salas||[]).forEach(s=>{
+    const nombre = normNombre(limpiaSala(s["nombre"]||s["Nombre"]));
+    const codigo = String(parseInt(s["codigo"]||s["Código"]||s["Codigo"]||0));
+    if (nombre && codigo && codigo!=="0") m[nombre] = codigo;
+  });
+  return m;
+}
+
+function asignarPromotorB2B(b2bRows, marcaciones, codigoPorSala) {
+  const porFechaStoreNbr = {};
   (marcaciones||[]).forEach(r=>{
     const fecha = normFecha(r["Fecha"]||"");
-    const sala = normNombre(limpiaSala(r["Sala"]));
+    const codigo = codigoPorSala[normNombre(limpiaSala(r["Sala"]))];
     const promotor = r["Promotor"];
-    if (!fecha || !sala || !promotor) return;
-    if (!porFechaSala[fecha]) porFechaSala[fecha] = {};
-    if (!porFechaSala[fecha][sala]) porFechaSala[fecha][sala] = new Set();
-    porFechaSala[fecha][sala].add(promotor);
+    if (!fecha || !codigo || !promotor) return;
+    if (!porFechaStoreNbr[fecha]) porFechaStoreNbr[fecha] = {};
+    if (!porFechaStoreNbr[fecha][codigo]) porFechaStoreNbr[fecha][codigo] = new Set();
+    porFechaStoreNbr[fecha][codigo].add(promotor);
   });
   return b2bRows.map(r=>{
     const fecha = normFecha(r["Fecha"]||"");
-    const tienda = normNombre(r["Store Name"]);
-    const candidatos = porFechaSala[fecha]?.[tienda];
+    const storeNbr = String(parseInt(r["Store Nbr"]||0));
+    const candidatos = porFechaStoreNbr[fecha]?.[storeNbr];
     const promotor = candidatos && candidatos.size===1 ? [...candidatos][0] : null;
     return { ...r, _promotor: promotor };
   });
@@ -250,19 +264,25 @@ function Dashboard({ onLogout }) {
   const marc = useMemo(()=>data?.marcaciones.filter(r=>fechasFilt.includes(normFecha(r["Fecha"]))&&filtraSalaProm(r))||[],[data,fechasFilt,salaSel,promotorSel]);
   const vent = useMemo(()=>data?.ventas.filter(r=>fechasFilt.includes(normFecha(r["Fecha"]))&&filtraSalaProm(r))||[],[data,fechasFilt,salaSel,promotorSel]);
   const cierresFilt = useMemo(()=>data?.cierres.filter(r=>fechasFilt.includes(normFecha(r["Fecha"]))&&filtraSalaProm(r))||[],[data,fechasFilt,salaSel,promotorSel]);
+  // codigo (Store Nbr) por sala, desde la hoja Salas del sheet de Configuración.
+  const codigoPorSala = useMemo(()=>construirMapaSalaCodigo(data?.salas||[]),[data]);
+
   // Cruza cada venta B2B con la sala marcada ese día para saber a qué promotor corresponde
   // (ver asignarPromotorB2B). Reemplaza el mapeo fijo Store Nbr → promotor, que quedaba
   // desactualizado cada vez que cambiaba el equipo o se sumaban tiendas nuevas.
   const b2bAsignado = useMemo(()=>{
     const filtradoFecha = (data?.ventasB2B||[]).filter(r=>fechasFilt.includes(normFecha(r["Fecha"])));
-    return asignarPromotorB2B(filtradoFecha, data?.marcaciones||[]);
-  },[data,fechasFilt]);
+    return asignarPromotorB2B(filtradoFecha, data?.marcaciones||[], codigoPorSala);
+  },[data,fechasFilt,codigoPorSala]);
 
   const b2b = useMemo(()=>b2bAsignado.filter(r=>{
-    if(salaSel!=="todas" && normNombre(r["Store Name"])!==normNombre(salaSel)) return false;
+    if(salaSel!=="todas") {
+      const codigoSel = codigoPorSala[normNombre(salaSel)];
+      if (String(parseInt(r["Store Nbr"]||0)) !== codigoSel) return false;
+    }
     if(promotorSel!=="todos" && r._promotor!==promotorSel) return false;
     return true;
-  }),[b2bAsignado,salaSel,promotorSel]);
+  }),[b2bAsignado,salaSel,promotorSel,codigoPorSala]);
 
   const promotores = useMemo(()=>[...new Set(marc.map(r=>r["Promotor"]))],[marc]);
   const totalUnidades = useMemo(()=>b2b.reduce((s,r)=>s+parseFloat(r["POS Qty"]||0),0),[b2b]);
