@@ -62,12 +62,16 @@ function asignarPromotorB2B(b2bRows, marcaciones, codigoPorSala) {
     if (!porFechaStoreNbr[fecha][codigo]) porFechaStoreNbr[fecha][codigo] = new Set();
     porFechaStoreNbr[fecha][codigo].add(promotor);
   });
+  // El B2B de Lider es nacional: trae venta de tiendas donde Nanolife no tiene promotor
+  // (no están en la hoja Salas). Eso es esperado, no una falla de cruce — se distingue
+  // con _tiendaPropia para no alarmar con "sin asignar" sobre tiendas ajenas al equipo.
+  const codigosPropios = new Set(Object.values(codigoPorSala));
   return b2bRows.map(r=>{
     const fecha = normFecha(r["Fecha"]||"");
     const storeNbr = String(parseInt(r["Store Nbr"]||0));
     const candidatos = porFechaStoreNbr[fecha]?.[storeNbr];
     const promotor = candidatos && candidatos.size===1 ? [...candidatos][0] : null;
-    return { ...r, _promotor: promotor };
+    return { ...r, _promotor: promotor, _tiendaPropia: codigosPropios.has(storeNbr) };
   });
 }
 const fmtFecha = f => {
@@ -285,8 +289,11 @@ function Dashboard({ onLogout }) {
   }),[b2bAsignado,salaSel,promotorSel,codigoPorSala]);
 
   const promotores = useMemo(()=>[...new Set(marc.map(r=>r["Promotor"]))],[marc]);
-  const totalUnidades = useMemo(()=>b2b.reduce((s,r)=>s+parseFloat(r["POS Qty"]||0),0),[b2b]);
-  const totalComision = useMemo(()=>b2b.reduce((s,r)=>s+parseFloat(r["POS Qty"]||0)*getComision(r["Item Desc 1"]),0),[b2b]);
+  // El B2B de Lider es nacional (trae venta de tiendas sin promotor Nanolife); el KPI de
+  // arriba estima comisiones del equipo, así que se acota a tiendas propias (_tiendaPropia).
+  const b2bPropio = useMemo(()=>b2b.filter(r=>r._tiendaPropia),[b2b]);
+  const totalUnidades = useMemo(()=>b2bPropio.reduce((s,r)=>s+parseFloat(r["POS Qty"]||0),0),[b2bPropio]);
+  const totalComision = useMemo(()=>b2bPropio.reduce((s,r)=>s+parseFloat(r["POS Qty"]||0)*getComision(r["Item Desc 1"]),0),[b2bPropio]);
 
   const porPromotor = useMemo(()=>{
     const m={};
@@ -809,7 +816,10 @@ function ComisionesSection({ data, marcaciones }) {
       const qty = parseFloat(r["POS Qty"]||0);
       if (qty <= 0) return;
       const com = qty * getComision(r["Item Desc 1"]);
-      if (!r._promotor) { sinAsignarQty += qty; sinAsignarCom += com; return; }
+      // Solo cuenta como "sin asignar" venta de una tienda propia de Nanolife sin cruce.
+      // Venta B2B de tiendas donde el equipo no tiene promotor (reporte nacional de Lider)
+      // se ignora silenciosamente: es esperada, no una falla de cruce.
+      if (!r._promotor) { if (r._tiendaPropia) { sinAsignarQty += qty; sinAsignarCom += com; } return; }
       const fecha = normFecha(r["Fecha"]||"");
       const prod  = r["Item Desc 1"]||"";
 
@@ -1179,7 +1189,9 @@ function VentasB2BSection({ data }) {
                     <td style={{fontSize:12,whiteSpace:"nowrap"}}>{r["Fecha"]}</td>
                     <td style={{fontSize:12,fontWeight:600}}>{r["Store Name"]}</td>
                     <td style={{fontSize:12,color:"#64748B"}}>{r["City"]}</td>
-                    <td style={{fontSize:12,color: r._promotor?"#0B2A2D":"#B45309"}}>{r._promotor||"Sin asignar"}</td>
+                    <td style={{fontSize:12,color: r._promotor?"#0B2A2D": r._tiendaPropia?"#B45309":"#94A3B8"}}>
+                      {r._promotor || (r._tiendaPropia ? "Sin asignar" : "—")}
+                    </td>
                     <td style={{fontSize:12}}>{PROD_MAP[r["Item Desc 1"]]||r["Item Desc 1"]}</td>
                     <td style={{fontSize:12,textAlign:"right",fontWeight:700,color:"#0E6F76"}}>{Math.round(parseFloat(r["POS Qty"]||0))}</td>
                   </tr>
