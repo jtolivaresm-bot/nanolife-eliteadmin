@@ -32,6 +32,20 @@ const normFecha = f => {
 const limpiaSala = s => s?.replace("Hiper Lider - ","").replace("Lider Express - ","") || s;
 const normNombre = s => (s||"").toString().normalize("NFD").replace(/[̀-ͯ]/g,"").toUpperCase().trim();
 
+// La hoja Promotores trae columnas salaId_DDmes (ej. "salaId_19jun") con la sala asignada
+// ese día — es el cronograma real de cada promotor, usado por la app de promotores para
+// saber dónde le toca trabajar. Se usa acá para saber cuántas jornadas se ESPERABAN de
+// cada uno (no un número parejo para todo el equipo). El año no viene en la columna, se
+// asume el año en curso — igual que hace la propia app de promotores.
+const MESES_EN = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+function fechaDeColumnaSalaId(key) {
+  const m = key.match(/^salaId_(\d{2})([a-z]{3})$/);
+  if (!m) return null;
+  const monIdx = MESES_EN.indexOf(m[2]);
+  if (monIdx < 0) return null;
+  return `${new Date().getFullYear()}-${String(monIdx+1).padStart(2,"0")}-${m[1]}`;
+}
+
 // Asigna cada fila de venta B2B al promotor correspondiente cruzando por sala+fecha
 // (no por Store Nbr fijo hardcodeado en el frontend, que quedaba desactualizado a medida
 // que crecía el equipo). El "Sala" de la marcación es el nombre completo (ej. "Hiper Lider
@@ -289,6 +303,25 @@ function Dashboard({ onLogout }) {
   }),[b2bAsignado,salaSel,promotorSel,codigoPorSala]);
 
   const promotores = useMemo(()=>[...new Set(marc.map(r=>r["Promotor"]))],[marc]);
+
+  // Jornadas esperadas por promotor: cuántas fechas de su cronograma (salaId_DDmes en la
+  // hoja Promotores) caen dentro del período filtrado. No es un número parejo para todo
+  // el equipo — cada promotor tiene su propio calendario asignado.
+  const jornadasEsperadasPorPromotor = useMemo(()=>{
+    const m = {};
+    (data?.promotores||[]).forEach(p=>{
+      const nombre = p["nombre"]||p["Nombre"];
+      if (!nombre) return;
+      const fechas = Object.entries(p)
+        .filter(([k,v])=>k.startsWith("salaId_")&&v)
+        .map(([k])=>fechaDeColumnaSalaId(k))
+        .filter(Boolean)
+        .filter(f=>fechasFilt.includes(f));
+      m[nombre] = new Set(fechas).size;
+    });
+    return m;
+  },[data,fechasFilt]);
+
   // El B2B de Lider es nacional (trae venta de tiendas sin promotor Nanolife); el KPI de
   // arriba estima comisiones del equipo, así que se acota a tiendas propias (_tiendaPropia).
   const b2bPropio = useMemo(()=>b2b.filter(r=>r._tiendaPropia),[b2b]);
@@ -483,7 +516,7 @@ function Dashboard({ onLogout }) {
 
           <ChartsRenderer ventasPorProd={ventasPorProd} ventasPorProm={ventasPorProm} ready={chartsReady&&vent.length>0}/>
 
-          <MetricasSection data={b2b} marcaciones={marc} chartsReady={chartsReady}/>
+          <MetricasSection data={b2b} marcaciones={marc} jornadasEsperadasPorPromotor={jornadasEsperadasPorPromotor} chartsReady={chartsReady}/>
 
           {/* TABLA MARCACIONES */}
           <div className="sec-title">Registro de marcaciones</div>
@@ -641,7 +674,7 @@ function ChartsRenderer({ ventasPorProd, ventasPorProm, ready }) {
 }
 
 /* ══════════════════ MÉTRICAS DE DESEMPEÑO ══════════════════ */
-function MetricasSection({ data, marcaciones, chartsReady }) {
+function MetricasSection({ data, marcaciones, jornadasEsperadasPorPromotor, chartsReady }) {
   // Cruza B2B (ya asignado por sala+fecha, ver asignarPromotorB2B) con marcaciones para
   // jornadas/cumplimiento/tendencia. porFecha guarda TODA la venta detectada por día (para
   // el gráfico de tendencia); totalQty/totalCom sólo suman días con jornada AM+PM completa,
@@ -682,28 +715,25 @@ function MetricasSection({ data, marcaciones, chartsReady }) {
     return Object.values(m);
   },[data, marcaciones]);
 
-  // fechasFilt mezcla fechas de marcaciones con fechas que solo aparecen en el B2B de
-  // Lider (reporta venta todos los días, incluso cuando ningún promotor trabajó ese día).
-  // "Jornadas esperadas" debe contar solo días donde el equipo efectivamente marcó asistencia.
-  const jornadasEsperadas = useMemo(()=>{
-    const fechas = new Set((marcaciones||[]).map(r=>normFecha(r["Fecha"]||"")).filter(Boolean));
-    return fechas.size || 1;
-  },[marcaciones]);
-
   const ranking = useMemo(()=>porPromotor
     .map(p=>{
       const pagoJornadas = p.jornadasCompletas*PAGO_JORNADA;
+      // Jornadas esperadas viene del cronograma real de cada promotor (hoja Promotores).
+      // Si no hay cronograma cargado para alguien, no hay con qué comparar — se usa su
+      // propio jornadasCompletas como base para no mostrar un % inflado o sin sentido.
+      const esperadas = jornadasEsperadasPorPromotor?.[p.nombre] || Math.max(p.jornadasCompletas,1);
       return {
         ...p,
         pagoJornadas,
+        esperadas,
         total: p.totalCom + pagoJornadas,
-        cumplimiento: Math.min(100, Math.round((p.jornadasCompletas/jornadasEsperadas)*100)),
+        cumplimiento: Math.min(100, Math.round((p.jornadasCompletas/esperadas)*100)),
         // "jornada activada" = jornada trabajada (AM+PM completo), no día calendario del período
         promJornada: p.jornadasCompletas>0 ? p.totalQty/p.jornadasCompletas : 0,
       };
     })
     .sort((a,b)=>b.total-a.total),
-  [porPromotor, jornadasEsperadas]);
+  [porPromotor, jornadasEsperadasPorPromotor]);
 
   const promJornadaEquipo = useMemo(()=>{
     const totalQty = ranking.reduce((s,p)=>s+p.totalQty,0);
@@ -773,7 +803,7 @@ function MetricasSection({ data, marcaciones, chartsReady }) {
                 <td style={{fontWeight:700,color:"#94A3B8"}}>{i+1}</td>
                 <td style={{fontWeight:600,fontSize:13}}>{p.nombre}</td>
                 <td style={{fontSize:12,color:"#64748B"}}>{p.sala}</td>
-                <td style={{fontSize:13,whiteSpace:"nowrap"}}>{p.jornadasCompletas}/{jornadasEsperadas}</td>
+                <td style={{fontSize:13,whiteSpace:"nowrap"}}>{p.jornadasCompletas}/{p.esperadas}</td>
                 <td>
                   <div style={{display:"flex",alignItems:"center",gap:6}}>
                     <div style={{width:60,height:6,borderRadius:3,background:"#E2E8F0",overflow:"hidden",flexShrink:0}}>

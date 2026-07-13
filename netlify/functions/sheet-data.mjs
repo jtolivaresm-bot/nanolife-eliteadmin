@@ -80,7 +80,7 @@ export const handler = async () => {
     // poder cruzar ventas B2B con marcaciones sin depender de un mapeo hardcodeado.
     const configSheetId = process.env.GOOGLE_CONFIG_SHEET_ID;
 
-    const [marcRows, ventasRows, cierresRows, fotosRows, audiosRows, b2bRows, salaRows] = await Promise.all([
+    const [marcRows, ventasRows, cierresRows, fotosRows, audiosRows, b2bRows, salaRows, promRows] = await Promise.all([
       readSheet(token, sheetId, "Marcaciones!A:L"),
       readSheet(token, sheetId, "Ventas!A:J"),
       readSheet(token, sheetId, "Cierres!A:H"),
@@ -88,6 +88,9 @@ export const handler = async () => {
       readSheet(token, sheetId, "Audios!A:E").catch(logFallo("Audios")),
       readSheet(token, sheetId, "VentasB2B!A:O").catch(logFallo("VentasB2B")),
       configSheetId ? readSheet(token, configSheetId, "Salas!A:Z").catch(logFallo("Salas")) : Promise.resolve([]),
+      // Promotores trae las columnas salaId_DDmes: el cronograma real de cada promotor,
+      // usado para saber cuántas jornadas se esperaban de cada uno (no un número parejo).
+      configSheetId ? readSheet(token, configSheetId, "Promotores!A:Z").catch(logFallo("Promotores")) : Promise.resolve([]),
     ]);
 
     return {
@@ -101,6 +104,7 @@ export const handler = async () => {
         audios: toObjects(audiosRows),
         ventasB2B: toObjects(b2bRows),
         salas: toObjects(salaRows),
+        promotores: toObjects(promRows),
         updatedAt: new Date().toISOString(),
       }),
     };
