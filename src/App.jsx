@@ -483,7 +483,7 @@ function Dashboard({ onLogout }) {
 
           <ChartsRenderer ventasPorProd={ventasPorProd} ventasPorProm={ventasPorProm} ready={chartsReady&&vent.length>0}/>
 
-          <MetricasSection data={b2b} marcaciones={data?.marcaciones||[]} fechasFilt={fechasFilt} chartsReady={chartsReady}/>
+          <MetricasSection data={b2b} marcaciones={marc} fechasFilt={fechasFilt} chartsReady={chartsReady}/>
 
           {/* TABLA MARCACIONES */}
           <div className="sec-title">Registro de marcaciones</div>
@@ -526,7 +526,7 @@ function Dashboard({ onLogout }) {
 
           {/* VENTAS B2B LIDER */}
           {b2b.length > 0 && <VentasB2BSection data={b2b}/>}
-          {b2b.length > 0 && <ComisionesSection data={b2b} marcaciones={data?.marcaciones||[]}/>}
+          {b2b.length > 0 && <ComisionesSection data={b2b} marcaciones={marc}/>}
 
           {/* FOTOS DE GÓNDOLA */}
           {data.fotos?.length > 0 && <>
