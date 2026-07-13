@@ -483,7 +483,7 @@ function Dashboard({ onLogout }) {
 
           <ChartsRenderer ventasPorProd={ventasPorProd} ventasPorProm={ventasPorProm} ready={chartsReady&&vent.length>0}/>
 
-          <MetricasSection data={b2b} marcaciones={marc} fechasFilt={fechasFilt} chartsReady={chartsReady}/>
+          <MetricasSection data={b2b} marcaciones={marc} chartsReady={chartsReady}/>
 
           {/* TABLA MARCACIONES */}
           <div className="sec-title">Registro de marcaciones</div>
@@ -641,7 +641,7 @@ function ChartsRenderer({ ventasPorProd, ventasPorProm, ready }) {
 }
 
 /* ══════════════════ MÉTRICAS DE DESEMPEÑO ══════════════════ */
-function MetricasSection({ data, marcaciones, fechasFilt, chartsReady }) {
+function MetricasSection({ data, marcaciones, chartsReady }) {
   // Cruza B2B (ya asignado por sala+fecha, ver asignarPromotorB2B) con marcaciones para
   // jornadas/cumplimiento/tendencia. porFecha guarda TODA la venta detectada por día (para
   // el gráfico de tendencia); totalQty/totalCom sólo suman días con jornada AM+PM completa,
@@ -682,7 +682,13 @@ function MetricasSection({ data, marcaciones, fechasFilt, chartsReady }) {
     return Object.values(m);
   },[data, marcaciones]);
 
-  const jornadasEsperadas = fechasFilt.length || 1;
+  // fechasFilt mezcla fechas de marcaciones con fechas que solo aparecen en el B2B de
+  // Lider (reporta venta todos los días, incluso cuando ningún promotor trabajó ese día).
+  // "Jornadas esperadas" debe contar solo días donde el equipo efectivamente marcó asistencia.
+  const jornadasEsperadas = useMemo(()=>{
+    const fechas = new Set((marcaciones||[]).map(r=>normFecha(r["Fecha"]||"")).filter(Boolean));
+    return fechas.size || 1;
+  },[marcaciones]);
 
   const ranking = useMemo(()=>porPromotor
     .map(p=>{
