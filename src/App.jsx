@@ -9,6 +9,7 @@ const CLAVE = "nanolife2026";
 const PAGO_JORNADA = 22000;
 const COLORES_PROD = ["#0E6F76","#16A34A","#F5A623","#DC2626","#7C3AED"];
 const COLORES_PROM = ["#0E6F76","#16A34A","#F5A623","#DC2626","#7C3AED","#0891B2","#D97706","#059669"];
+const CADENA_BADGE = { Walmart:"badge-blue", Easy:"badge-ok", Tottus:"badge-warn" };
 
 const COMISION_B2B = {
   "LIMPIA PISO LAVANDA": 200,
@@ -53,23 +54,37 @@ function fechaDeColumnaSalaId(key) {
 // oficial de Lider (ej. "VITACURA"), por eso el cruce va vía la hoja Salas del sheet de
 // Configuración: nombre de sala → codigo (que sí es igual al Store Nbr del B2B).
 
+// Cadena de retail a la que pertenece una sala (Walmart, Easy, Tottus...). Se usa la
+// columna "cadena" de la hoja Salas si existe; si no está cargada todavía, se infiere
+// del prefijo del nombre (mismo prefijo que ya usa la app de promotores para cada cadena).
+function inferirCadena(nombreSala) {
+  const n = normNombre(nombreSala);
+  if (n.startsWith("HIPER LIDER") || n.startsWith("LIDER EXPRESS")) return "Walmart";
+  if (n.startsWith("EASY")) return "Easy";
+  if (n.startsWith("TOTTUS")) return "Tottus";
+  return "Sin definir";
+}
+
 // Mapa nombre de sala (normalizado, sin prefijo "Hiper Lider - "/"Lider Express - ")
-// → codigo/Store Nbr, desde la hoja Salas.
-function construirMapaSalaCodigo(salas) {
+// → { codigo (Store Nbr), cadena }, desde la hoja Salas.
+function construirMapaSalas(salas) {
   const m = {};
   (salas||[]).forEach(s=>{
-    const nombre = normNombre(limpiaSala(s["nombre"]||s["Nombre"]));
-    const codigo = String(parseInt(s["codigo"]||s["Código"]||s["Codigo"]||0));
-    if (nombre && codigo && codigo!=="0") m[nombre] = codigo;
+    const nombreRaw = s["nombre"]||s["Nombre"]||"";
+    const nombre = normNombre(limpiaSala(nombreRaw));
+    if (!nombre) return;
+    const codigoNum = String(parseInt(s["codigo"]||s["Código"]||s["Codigo"]||0));
+    const cadena = (s["cadena"]||s["Cadena"]||"").trim() || inferirCadena(nombreRaw);
+    m[nombre] = { codigo: (codigoNum && codigoNum!=="0") ? codigoNum : null, cadena };
   });
   return m;
 }
 
-function asignarPromotorB2B(b2bRows, marcaciones, codigoPorSala) {
+function asignarPromotorB2B(b2bRows, marcaciones, salasInfo) {
   const porFechaStoreNbr = {};
   (marcaciones||[]).forEach(r=>{
     const fecha = normFecha(r["Fecha"]||"");
-    const codigo = codigoPorSala[normNombre(limpiaSala(r["Sala"]))];
+    const codigo = salasInfo[normNombre(limpiaSala(r["Sala"]))]?.codigo;
     const promotor = r["Promotor"];
     if (!fecha || !codigo || !promotor) return;
     if (!porFechaStoreNbr[fecha]) porFechaStoreNbr[fecha] = {};
@@ -79,13 +94,15 @@ function asignarPromotorB2B(b2bRows, marcaciones, codigoPorSala) {
   // El B2B de Lider es nacional: trae venta de tiendas donde Nanolife no tiene promotor
   // (no están en la hoja Salas). Eso es esperado, no una falla de cruce — se distingue
   // con _tiendaPropia para no alarmar con "sin asignar" sobre tiendas ajenas al equipo.
-  const codigosPropios = new Set(Object.values(codigoPorSala));
+  const codigosPropios = new Set(Object.values(salasInfo).map(s=>s.codigo).filter(Boolean));
   return b2bRows.map(r=>{
     const fecha = normFecha(r["Fecha"]||"");
     const storeNbr = String(parseInt(r["Store Nbr"]||0));
     const candidatos = porFechaStoreNbr[fecha]?.[storeNbr];
     const promotor = candidatos && candidatos.size===1 ? [...candidatos][0] : null;
-    return { ...r, _promotor: promotor, _tiendaPropia: codigosPropios.has(storeNbr) };
+    // El feed de VentasB2B es el reporte oficial de Lider — todo lo que llega por acá es
+    // cadena Walmart por definición (Easy/Tottus todavía no tienen un feed automático).
+    return { ...r, _promotor: promotor, _tiendaPropia: codigosPropios.has(storeNbr), _cadena: "Walmart" };
   });
 }
 const fmtFecha = f => {
@@ -223,6 +240,7 @@ function Dashboard({ onLogout }) {
   const [fechaSel, setFechaSel] = useState("todo");
   const [salaSel, setSalaSel] = useState("todas");
   const [promotorSel, setPromotorSel] = useState("todos");
+  const [cadenaSel, setCadenaSel] = useState("todas");
   const [chartsReady, setChartsReady] = useState(false);
 
   async function fetchData() {
@@ -275,32 +293,43 @@ function Dashboard({ onLogout }) {
     return [...new Set(data.marcaciones.map(r=>r["Promotor"]).filter(Boolean))].sort();
   },[data]);
 
+  // { codigo (Store Nbr), cadena } por sala, desde la hoja Salas del sheet de Configuración.
+  const salasInfo = useMemo(()=>construirMapaSalas(data?.salas||[]),[data]);
+  const cadenaDeSala = sala => salasInfo[normNombre(limpiaSala(sala))]?.cadena || inferirCadena(sala);
+
+  const cadenasDisponibles = useMemo(()=>{
+    if(!data) return [];
+    return [...new Set(data.marcaciones.map(r=>cadenaDeSala(r["Sala"])).filter(Boolean))].sort();
+  },[data,salasInfo]);
+
   const filtraSalaProm = r =>
     (salaSel==="todas" || limpiaSala(r["Sala"])===salaSel) &&
-    (promotorSel==="todos" || r["Promotor"]===promotorSel);
+    (promotorSel==="todos" || r["Promotor"]===promotorSel) &&
+    (cadenaSel==="todas" || cadenaDeSala(r["Sala"])===cadenaSel);
 
-  const marc = useMemo(()=>data?.marcaciones.filter(r=>fechasFilt.includes(normFecha(r["Fecha"]))&&filtraSalaProm(r))||[],[data,fechasFilt,salaSel,promotorSel]);
-  const vent = useMemo(()=>data?.ventas.filter(r=>fechasFilt.includes(normFecha(r["Fecha"]))&&filtraSalaProm(r))||[],[data,fechasFilt,salaSel,promotorSel]);
-  const cierresFilt = useMemo(()=>data?.cierres.filter(r=>fechasFilt.includes(normFecha(r["Fecha"]))&&filtraSalaProm(r))||[],[data,fechasFilt,salaSel,promotorSel]);
-  // codigo (Store Nbr) por sala, desde la hoja Salas del sheet de Configuración.
-  const codigoPorSala = useMemo(()=>construirMapaSalaCodigo(data?.salas||[]),[data]);
+  const marc = useMemo(()=>data?.marcaciones.filter(r=>fechasFilt.includes(normFecha(r["Fecha"]))&&filtraSalaProm(r))||[],[data,fechasFilt,salaSel,promotorSel,cadenaSel,salasInfo]);
+  const vent = useMemo(()=>data?.ventas.filter(r=>fechasFilt.includes(normFecha(r["Fecha"]))&&filtraSalaProm(r))||[],[data,fechasFilt,salaSel,promotorSel,cadenaSel,salasInfo]);
+  const cierresFilt = useMemo(()=>data?.cierres.filter(r=>fechasFilt.includes(normFecha(r["Fecha"]))&&filtraSalaProm(r))||[],[data,fechasFilt,salaSel,promotorSel,cadenaSel,salasInfo]);
 
   // Cruza cada venta B2B con la sala marcada ese día para saber a qué promotor corresponde
   // (ver asignarPromotorB2B). Reemplaza el mapeo fijo Store Nbr → promotor, que quedaba
   // desactualizado cada vez que cambiaba el equipo o se sumaban tiendas nuevas.
   const b2bAsignado = useMemo(()=>{
     const filtradoFecha = (data?.ventasB2B||[]).filter(r=>fechasFilt.includes(normFecha(r["Fecha"])));
-    return asignarPromotorB2B(filtradoFecha, data?.marcaciones||[], codigoPorSala);
-  },[data,fechasFilt,codigoPorSala]);
+    return asignarPromotorB2B(filtradoFecha, data?.marcaciones||[], salasInfo);
+  },[data,fechasFilt,salasInfo]);
 
   const b2b = useMemo(()=>b2bAsignado.filter(r=>{
+    // El feed de VentasB2B es 100% cadena Walmart (Lider) — si se filtra por Easy/Tottus
+    // no hay nada que mostrar todavía (no existe un feed automático para esas cadenas).
+    if(cadenaSel!=="todas" && cadenaSel!=="Walmart") return false;
     if(salaSel!=="todas") {
-      const codigoSel = codigoPorSala[normNombre(salaSel)];
+      const codigoSel = salasInfo[normNombre(salaSel)]?.codigo;
       if (String(parseInt(r["Store Nbr"]||0)) !== codigoSel) return false;
     }
     if(promotorSel!=="todos" && r._promotor!==promotorSel) return false;
     return true;
-  }),[b2bAsignado,salaSel,promotorSel,codigoPorSala]);
+  }),[b2bAsignado,salaSel,promotorSel,cadenaSel,salasInfo]);
 
   const promotores = useMemo(()=>[...new Set(marc.map(r=>r["Promotor"]))],[marc]);
 
@@ -411,8 +440,13 @@ function Dashboard({ onLogout }) {
               <option value="todos">Todos los promotores</option>
               {promotoresDisponibles.map(p=><option key={p} value={p}>{p}</option>)}
             </select>
-            {(salaSel!=="todas"||promotorSel!=="todos") && (
-              <button className="fecha-btn" onClick={()=>{setSalaSel("todas");setPromotorSel("todos");}}>Limpiar filtros</button>
+            <ShoppingCart size={15} color="#64748B"/>
+            <select className="sel-filter" value={cadenaSel} onChange={e=>setCadenaSel(e.target.value)}>
+              <option value="todas">Todas las cadenas</option>
+              {cadenasDisponibles.map(c=><option key={c} value={c}>{c}</option>)}
+            </select>
+            {(salaSel!=="todas"||promotorSel!=="todos"||cadenaSel!=="todas") && (
+              <button className="fecha-btn" onClick={()=>{setSalaSel("todas");setPromotorSel("todos");setCadenaSel("todas");}}>Limpiar filtros</button>
             )}
           </div>
 
@@ -516,7 +550,7 @@ function Dashboard({ onLogout }) {
 
           <ChartsRenderer ventasPorProd={ventasPorProd} ventasPorProm={ventasPorProm} ready={chartsReady&&vent.length>0}/>
 
-          <MetricasSection data={b2b} marcaciones={marc} jornadasEsperadasPorPromotor={jornadasEsperadasPorPromotor} chartsReady={chartsReady}/>
+          <MetricasSection data={b2b} marcaciones={marc} jornadasEsperadasPorPromotor={jornadasEsperadasPorPromotor} cadenaDeSala={cadenaDeSala} chartsReady={chartsReady}/>
 
           {/* TABLA MARCACIONES */}
           <div className="sec-title">Registro de marcaciones</div>
@@ -559,7 +593,13 @@ function Dashboard({ onLogout }) {
 
           {/* VENTAS B2B LIDER */}
           {b2b.length > 0 && <VentasB2BSection data={b2b}/>}
-          {b2b.length > 0 && <ComisionesSection data={b2b} marcaciones={marc}/>}
+          {b2b.length > 0 && <ComisionesSection data={b2b} marcaciones={marc} cadenaDeSala={cadenaDeSala}/>}
+          {b2b.length === 0 && cadenaSel!=="todas" && cadenaSel!=="Walmart" && (
+            <div style={{background:"#EFF6FF",border:"1px solid #BFDBFE",borderRadius:12,padding:14,marginTop:20,color:"#1D4ED8",display:"flex",gap:8,fontSize:13}}>
+              <AlertCircle size={16} style={{flexShrink:0,marginTop:1}}/>
+              <span>La cadena <b>{cadenaSel}</b> todavía no tiene un feed automático de ventas — el reporte B2B que llega hoy es solo de Lider (Walmart). Las jornadas y el pago fijo de este equipo sí se calculan normalmente.</span>
+            </div>
+          )}
 
           {/* FOTOS DE GÓNDOLA */}
           {data.fotos?.length > 0 && <>
@@ -674,7 +714,7 @@ function ChartsRenderer({ ventasPorProd, ventasPorProm, ready }) {
 }
 
 /* ══════════════════ MÉTRICAS DE DESEMPEÑO ══════════════════ */
-function MetricasSection({ data, marcaciones, jornadasEsperadasPorPromotor, chartsReady }) {
+function MetricasSection({ data, marcaciones, jornadasEsperadasPorPromotor, cadenaDeSala, chartsReady }) {
   // Cruza B2B (ya asignado por sala+fecha, ver asignarPromotorB2B) con marcaciones para
   // jornadas/cumplimiento/tendencia. porFecha guarda TODA la venta detectada por día (para
   // el gráfico de tendencia); totalQty/totalCom sólo suman días con jornada AM+PM completa,
@@ -698,8 +738,10 @@ function MetricasSection({ data, marcaciones, jornadasEsperadasPorPromotor, char
       if (!m[nombre]) m[nombre] = { nombre, sala: limpiaSala(r["Sala"]), porFecha:{} };
     });
     Object.values(m).forEach(p=>{
+      const marcProm = (marcaciones||[]).filter(r=>r["Promotor"]===p.nombre);
+      p.cadena = cadenaDeSala?.(marcProm[0]?.["Sala"]) || "Sin definir";
       const dias = {};
-      (marcaciones||[]).filter(r=>r["Promotor"]===p.nombre).forEach(r=>{
+      marcProm.forEach(r=>{
         const k = normFecha(r["Fecha"]||""); if (!k) return;
         if (!dias[k]) dias[k]={ae:0,as:0,pe:0,ps:0};
         if(r["Turno"]==="AM"&&r["Tipo"]==="Entrada") dias[k].ae=1;
@@ -713,7 +755,7 @@ function MetricasSection({ data, marcaciones, jornadasEsperadasPorPromotor, char
       p.totalCom = Object.entries(p.porFecha).filter(([f])=>fechasTrabajadas.has(f)).reduce((s,[,d])=>s+d.com,0);
     });
     return Object.values(m);
-  },[data, marcaciones]);
+  },[data, marcaciones, cadenaDeSala]);
 
   const ranking = useMemo(()=>porPromotor
     .map(p=>{
@@ -795,7 +837,7 @@ function MetricasSection({ data, marcaciones, jornadasEsperadasPorPromotor, char
       <div className="card" style={{padding:0,overflowX:"auto"}}>
         <table className="table">
           <thead>
-            <tr><th>#</th><th>Promotor</th><th>Sala</th><th>Jornadas</th><th>Cumplimiento</th><th>Unidades B2B</th><th>Prom./Jornada</th><th>Comisión B2B</th><th>Total</th></tr>
+            <tr><th>#</th><th>Promotor</th><th>Sala</th><th>Cadena</th><th>Jornadas</th><th>Cumplimiento</th><th>Unidades B2B</th><th>Prom./Jornada</th><th>Comisión B2B</th><th>Total</th></tr>
           </thead>
           <tbody>
             {ranking.map((p,i)=>(
@@ -803,6 +845,7 @@ function MetricasSection({ data, marcaciones, jornadasEsperadasPorPromotor, char
                 <td style={{fontWeight:700,color:"#94A3B8"}}>{i+1}</td>
                 <td style={{fontWeight:600,fontSize:13}}>{p.nombre}</td>
                 <td style={{fontSize:12,color:"#64748B"}}>{p.sala}</td>
+                <td><span className={`badge ${CADENA_BADGE[p.cadena]||"badge-off"}`}>{p.cadena}</span></td>
                 <td style={{fontSize:13,whiteSpace:"nowrap"}}>{p.jornadasCompletas}/{p.esperadas}</td>
                 <td>
                   <div style={{display:"flex",alignItems:"center",gap:6}}>
@@ -915,15 +958,15 @@ function ComisionesSection({ data, marcaciones }) {
   return (
     <>
       <div className="sec-title" style={{marginTop:20}}>
-        Comisiones por promotor · Sell Out B2B
+        Comisiones por promotor · Sell Out B2B (solo cadena Walmart)
       </div>
 
       {/* Total general */}
       <div style={{background:"linear-gradient(135deg,#0A4C52,#0E6F76)",borderRadius:16,padding:"16px 20px",marginBottom:14,color:"#fff",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <div>
-          <div style={{fontSize:11,opacity:.75,textTransform:"uppercase",letterSpacing:".08em",marginBottom:4}}>Total a pagar al equipo</div>
+          <div style={{fontSize:11,opacity:.75,textTransform:"uppercase",letterSpacing:".08em",marginBottom:4}}>Total a pagar al equipo (jornadas de todas las cadenas + comisión B2B Walmart)</div>
           <div style={{fontSize:32,fontWeight:700,letterSpacing:"-.02em"}}>{fmtCLP(totalGeneral)}</div>
-          <div style={{fontSize:12,opacity:.7,marginTop:4}}>Jornadas + Comisiones B2B · {porPromotor.length} promotores</div>
+          <div style={{fontSize:12,opacity:.7,marginTop:4}}>Jornadas + Comisiones B2B · {porPromotor.length} promotores con venta Walmart</div>
         </div>
         <TrendingUp size={40} style={{opacity:.3}}/>
       </div>
@@ -1088,7 +1131,7 @@ function VentasB2BSection({ data }) {
   return (
     <>
       <div className="sec-title" style={{marginTop:20}}>
-        Ventas B2B Lider · Sell Out Oficial
+        Ventas B2B Lider (Walmart) · Sell Out Oficial
       </div>
 
       {/* Filtro por día */}
