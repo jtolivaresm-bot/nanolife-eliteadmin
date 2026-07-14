@@ -80,7 +80,7 @@ export const handler = async () => {
     // poder cruzar ventas B2B con marcaciones sin depender de un mapeo hardcodeado.
     const configSheetId = process.env.GOOGLE_CONFIG_SHEET_ID;
 
-    const [marcRows, ventasRows, cierresRows, fotosRows, audiosRows, b2bRows, salaRows, promRows] = await Promise.all([
+    const [marcRows, ventasRows, cierresRows, fotosRows, audiosRows, b2bRows, salaRows, promRows, comisionesRows, easyRows, tottusRows] = await Promise.all([
       readSheet(token, sheetId, "Marcaciones!A:L"),
       readSheet(token, sheetId, "Ventas!A:J"),
       readSheet(token, sheetId, "Cierres!A:H"),
@@ -88,9 +88,18 @@ export const handler = async () => {
       readSheet(token, sheetId, "Audios!A:E").catch(logFallo("Audios")),
       readSheet(token, sheetId, "VentasB2B!A:O").catch(logFallo("VentasB2B")),
       configSheetId ? readSheet(token, configSheetId, "Salas!A:Z").catch(logFallo("Salas")) : Promise.resolve([]),
-      // Promotores trae las columnas salaId_DDmes: el cronograma real de cada promotor,
-      // usado para saber cuántas jornadas se esperaban de cada uno (no un número parejo).
+      // Promotores trae las columnas salaId_DDmes (cronograma) y pagoFijo (monto de jornada
+      // por promotor, si difiere del default).
       configSheetId ? readSheet(token, configSheetId, "Promotores!A:Z").catch(logFallo("Promotores")) : Promise.resolve([]),
+      // Comisiones: tabla Cadena/Producto/Comision -- una fila por producto y cadena, ya
+      // que Walmart/Easy/Tottus pueden pagar distinto por el mismo producto.
+      configSheetId ? readSheet(token, configSheetId, "Comisiones!A:Z").catch(logFallo("Comisiones")) : Promise.resolve([]),
+      // VentasEasy/VentasTottus: carga manual (no hay feed automático como el B2B de
+      // Lider). Mismo patrón de columnas que VentasB2B pero simplificado: Fecha/Sala/
+      // Producto/Unidades -- se cruza contra marcaciones por nombre de sala, no por
+      // Store Nbr (esas cadenas no tienen ese código).
+      readSheet(token, sheetId, "VentasEasy!A:Z").catch(logFallo("VentasEasy")),
+      readSheet(token, sheetId, "VentasTottus!A:Z").catch(logFallo("VentasTottus")),
     ]);
 
     return {
@@ -105,6 +114,9 @@ export const handler = async () => {
         ventasB2B: toObjects(b2bRows),
         salas: toObjects(salaRows),
         promotores: toObjects(promRows),
+        comisiones: toObjects(comisionesRows),
+        ventasEasy: toObjects(easyRows),
+        ventasTottus: toObjects(tottusRows),
         updatedAt: new Date().toISOString(),
       }),
     };

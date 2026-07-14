@@ -11,7 +11,9 @@ const COLORES_PROD = ["#0E6F76","#16A34A","#F5A623","#DC2626","#7C3AED"];
 const COLORES_PROM = ["#0E6F76","#16A34A","#F5A623","#DC2626","#7C3AED","#0891B2","#D97706","#059669"];
 const CADENA_BADGE = { Walmart:"badge-blue", Easy:"badge-ok", Tottus:"badge-warn" };
 
-const COMISION_B2B = {
+// Comisión por defecto para Walmart mientras no se cargue la hoja "Comisiones" del
+// Config Sheet (cadena/producto/comision) — una vez cargada, esos valores mandan.
+const COMISION_WALMART_DEFAULT = {
   "LIMPIA PISO LAVANDA": 200,
   "LIMPIA PISO SUMMER":  200,
   "DETERG  PODSX10 UN":  250,
@@ -19,7 +21,32 @@ const COMISION_B2B = {
   "CAPSULAS PODS HIPO":  250,
   "DETERG PODS X25 UN":  400,
 };
-const getComision = (desc) => COMISION_B2B[desc] || COMISION_B2B[desc?.replace(/  /g," ")] || 0;
+
+// Mapa cadena → producto (normalizado) → comisión, desde la hoja Comisiones del Config
+// Sheet. Cada cadena puede pagar distinto por el mismo producto.
+function construirMapaComisiones(comisionesRows) {
+  const m = {};
+  (comisionesRows||[]).forEach(r=>{
+    const cadena = (r["cadena"]||r["Cadena"]||"").trim();
+    const producto = normNombre((r["producto"]||r["Producto"]||"").replace(/\s+/g," "));
+    const monto = parseFloat(r["comision"]||r["Comision"]||r["Comisión"]||0);
+    if (!cadena || !producto) return;
+    if (!m[cadena]) m[cadena] = {};
+    m[cadena][producto] = monto;
+  });
+  return m;
+}
+
+function getComisionCadena(comisionesPorCadena, cadena, producto) {
+  const prodNorm = normNombre((producto||"").replace(/\s+/g," "));
+  const tabla = comisionesPorCadena?.[cadena];
+  if (tabla && prodNorm in tabla) return tabla[prodNorm];
+  // Fallback: si todavía no se cargó la hoja Comisiones, Walmart usa la tabla por defecto.
+  if (cadena==="Walmart" && !tabla) {
+    return COMISION_WALMART_DEFAULT[producto] || COMISION_WALMART_DEFAULT[producto?.replace(/  /g," ")] || 0;
+  }
+  return 0;
+}
 
 const fmtCLP = n => new Intl.NumberFormat("es-CL",{style:"currency",currency:"CLP",maximumFractionDigits:0}).format(Math.round(n||0));
 const normFecha = f => {
@@ -31,7 +58,7 @@ const normFecha = f => {
   return f;
 };
 const limpiaSala = s => s?.replace("Hiper Lider - ","").replace("Lider Express - ","") || s;
-const normNombre = s => (s||"").toString().normalize("NFD").replace(/[̀-ͯ]/g,"").toUpperCase().trim();
+const normNombre = s => (s||"").toString().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/\s+/g," ").toUpperCase().trim();
 
 // La hoja Promotores trae columnas salaId_DDmes (ej. "salaId_19jun") con la sala asignada
 // ese día — es el cronograma real de cada promotor, usado por la app de promotores para
@@ -103,6 +130,29 @@ function asignarPromotorB2B(b2bRows, marcaciones, salasInfo) {
     // El feed de VentasB2B es el reporte oficial de Lider — todo lo que llega por acá es
     // cadena Walmart por definición (Easy/Tottus todavía no tienen un feed automático).
     return { ...r, _promotor: promotor, _tiendaPropia: codigosPropios.has(storeNbr), _cadena: "Walmart" };
+  });
+}
+
+// Igual que asignarPromotorB2B, pero para las hojas de carga manual (VentasEasy/
+// VentasTottus): esas cadenas no tienen Store Nbr, así que se cruza directo por el
+// nombre de sala que escribió quien cargó la planilla contra la sala marcada ese día.
+function asignarPromotorPorSala(ventaRows, marcaciones) {
+  const porFechaSala = {};
+  (marcaciones||[]).forEach(r=>{
+    const fecha = normFecha(r["Fecha"]||"");
+    const sala = normNombre(limpiaSala(r["Sala"]));
+    const promotor = r["Promotor"];
+    if (!fecha || !sala || !promotor) return;
+    if (!porFechaSala[fecha]) porFechaSala[fecha] = {};
+    if (!porFechaSala[fecha][sala]) porFechaSala[fecha][sala] = new Set();
+    porFechaSala[fecha][sala].add(promotor);
+  });
+  return ventaRows.map(r=>{
+    const fecha = normFecha(r["Fecha"]||"");
+    const sala = normNombre(limpiaSala(r["Sala"]||r["Tienda"]||""));
+    const candidatos = porFechaSala[fecha]?.[sala];
+    const promotor = candidatos && candidatos.size===1 ? [...candidatos][0] : null;
+    return { ...r, _promotor: promotor };
   });
 }
 const fmtFecha = f => {
@@ -351,11 +401,60 @@ function Dashboard({ onLogout }) {
     return m;
   },[data,fechasFilt]);
 
-  // El B2B de Lider es nacional (trae venta de tiendas sin promotor Nanolife); el KPI de
-  // arriba estima comisiones del equipo, así que se acota a tiendas propias (_tiendaPropia).
-  const b2bPropio = useMemo(()=>b2b.filter(r=>r._tiendaPropia),[b2b]);
-  const totalUnidades = useMemo(()=>b2bPropio.reduce((s,r)=>s+parseFloat(r["POS Qty"]||0),0),[b2bPropio]);
-  const totalComision = useMemo(()=>b2bPropio.reduce((s,r)=>s+parseFloat(r["POS Qty"]||0)*getComision(r["Item Desc 1"]),0),[b2bPropio]);
+  // Comisión por cadena (Walmart/Easy/Tottus), desde la hoja Comisiones del Config Sheet.
+  const comisionesPorCadena = useMemo(()=>construirMapaComisiones(data?.comisiones||[]),[data]);
+
+  // Pago fijo por promotor, desde la columna "pagoFijo" de la hoja Promotores. Si no está
+  // cargado para alguien, se usa el default (PAGO_JORNADA).
+  const pagoFijoPorPromotor = useMemo(()=>{
+    const m = {};
+    (data?.promotores||[]).forEach(p=>{
+      const nombre = p["nombre"]||p["Nombre"];
+      const monto = parseFloat(p["pagoFijo"]||p["PagoFijo"]||p["Pago Fijo"]||0);
+      if (nombre && monto>0) m[nombre] = monto;
+    });
+    return m;
+  },[data]);
+
+  // Easy y Tottus son carga manual (no hay feed automático como el B2B de Lider) — se
+  // cruzan contra la sala marcada ese día por nombre directo, no por Store Nbr.
+  const easyAsignado = useMemo(()=>{
+    const filtradoFecha = (data?.ventasEasy||[]).filter(r=>fechasFilt.includes(normFecha(r["Fecha"])));
+    return asignarPromotorPorSala(filtradoFecha, data?.marcaciones||[]);
+  },[data,fechasFilt]);
+  const tottusAsignado = useMemo(()=>{
+    const filtradoFecha = (data?.ventasTottus||[]).filter(r=>fechasFilt.includes(normFecha(r["Fecha"])));
+    return asignarPromotorPorSala(filtradoFecha, data?.marcaciones||[]);
+  },[data,fechasFilt]);
+
+  const filtraSalaPromCadena = (r, cadena) =>
+    (cadenaSel==="todas" || cadenaSel===cadena) &&
+    (salaSel==="todas" || normNombre(limpiaSala(r["Sala"]))===normNombre(salaSel)) &&
+    (promotorSel==="todos" || r._promotor===promotorSel);
+
+  const easyVentas = useMemo(()=>easyAsignado.filter(r=>filtraSalaPromCadena(r,"Easy")),[easyAsignado,salaSel,promotorSel,cadenaSel]);
+  const tottusVentas = useMemo(()=>tottusAsignado.filter(r=>filtraSalaPromCadena(r,"Tottus")),[tottusAsignado,salaSel,promotorSel,cadenaSel]);
+
+  // Combina Walmart (B2B automático) + Easy + Tottus (carga manual) en una forma común,
+  // para que Métricas de desempeño y Comisiones por promotor calculen sobre las 3 cadenas
+  // a la vez en vez de solo Walmart.
+  const ventasTodas = useMemo(()=>[
+    ...b2b.filter(r=>r._tiendaPropia).map(r=>({
+      fecha: normFecha(r["Fecha"]||""), _promotor:r._promotor, _cadena:"Walmart",
+      producto: r["Item Desc 1"]||"", qty: parseFloat(r["POS Qty"]||0), _flagSinAsignar:true,
+    })),
+    ...easyVentas.map(r=>({
+      fecha: normFecha(r["Fecha"]||""), _promotor:r._promotor, _cadena:"Easy",
+      producto: r["Producto"]||"", qty: parseFloat(r["Unidades"]||0), _flagSinAsignar:true,
+    })),
+    ...tottusVentas.map(r=>({
+      fecha: normFecha(r["Fecha"]||""), _promotor:r._promotor, _cadena:"Tottus",
+      producto: r["Producto"]||"", qty: parseFloat(r["Unidades"]||0), _flagSinAsignar:true,
+    })),
+  ],[b2b,easyVentas,tottusVentas]);
+
+  const totalUnidades = useMemo(()=>ventasTodas.reduce((s,r)=>s+r.qty,0),[ventasTodas]);
+  const totalComision = useMemo(()=>ventasTodas.reduce((s,r)=>s+r.qty*getComisionCadena(comisionesPorCadena,r._cadena,r.producto),0),[ventasTodas,comisionesPorCadena]);
 
   const porPromotor = useMemo(()=>{
     const m={};
@@ -373,7 +472,7 @@ function Dashboard({ onLogout }) {
     const dias={};
     marc.forEach(r=>{
       const k=`${r["Promotor"]}__${r["Fecha"]}`;
-      if(!dias[k]) dias[k]={ae:0,as:0,pe:0,ps:0};
+      if(!dias[k]) dias[k]={promotor:r["Promotor"],ae:0,as:0,pe:0,ps:0};
       if(r["Turno"]==="AM"&&r["Tipo"]==="Entrada") dias[k].ae=1;
       if(r["Turno"]==="AM"&&r["Tipo"]==="Salida")  dias[k].as=1;
       if(r["Turno"]==="PM"&&r["Tipo"]==="Entrada") dias[k].pe=1;
@@ -381,6 +480,23 @@ function Dashboard({ onLogout }) {
     });
     return Object.values(dias).filter(d=>d.ae&&d.as&&d.pe&&d.ps).length;
   },[marc]);
+
+  // Total pago fijo del período: cada jornada completa se paga al monto de ESE promotor
+  // (columna pagoFijo en la hoja Promotores), no un monto parejo para todo el equipo.
+  const totalPagoFijo = useMemo(()=>{
+    const dias={};
+    marc.forEach(r=>{
+      const k=`${r["Promotor"]}__${r["Fecha"]}`;
+      if(!dias[k]) dias[k]={promotor:r["Promotor"],ae:0,as:0,pe:0,ps:0};
+      if(r["Turno"]==="AM"&&r["Tipo"]==="Entrada") dias[k].ae=1;
+      if(r["Turno"]==="AM"&&r["Tipo"]==="Salida")  dias[k].as=1;
+      if(r["Turno"]==="PM"&&r["Tipo"]==="Entrada") dias[k].pe=1;
+      if(r["Turno"]==="PM"&&r["Tipo"]==="Salida")  dias[k].ps=1;
+    });
+    return Object.values(dias)
+      .filter(d=>d.ae&&d.as&&d.pe&&d.ps)
+      .reduce((s,d)=>s+(pagoFijoPorPromotor[d.promotor]||PAGO_JORNADA),0);
+  },[marc,pagoFijoPorPromotor]);
 
   const ventasPorProd = useMemo(()=>{
     const m={};
@@ -460,16 +576,16 @@ function Dashboard({ onLogout }) {
             <div className="stat">
               <div className="lbl"><CheckCircle2 size={12}/> Jornadas completas</div>
               <div className="val">{jornadasCompletas}</div>
-              <div className="sub">{fmtCLP(jornadasCompletas*PAGO_JORNADA)} pago fijo</div>
+              <div className="sub">{fmtCLP(totalPagoFijo)} pago fijo</div>
             </div>
             <div className="stat">
               <div className="lbl"><Package size={12}/> Unidades vendidas</div>
               <div className="val">{totalUnidades}</div>
-              <div className="sub">{fmtCLP(totalComision)} en comisiones</div>
+              <div className="sub">{fmtCLP(totalComision)} en comisiones · todas las cadenas</div>
             </div>
             <div className="stat">
               <div className="lbl"><TrendingUp size={12}/> Total estimado</div>
-              <div className="val" style={{fontSize:16}}>{fmtCLP(totalComision+jornadasCompletas*PAGO_JORNADA)}</div>
+              <div className="val" style={{fontSize:16}}>{fmtCLP(totalComision+totalPagoFijo)}</div>
               <div className="sub">jornadas + comisiones</div>
             </div>
           </div>
@@ -550,7 +666,7 @@ function Dashboard({ onLogout }) {
 
           <ChartsRenderer ventasPorProd={ventasPorProd} ventasPorProm={ventasPorProm} ready={chartsReady&&vent.length>0}/>
 
-          <MetricasSection data={b2b} marcaciones={marc} jornadasEsperadasPorPromotor={jornadasEsperadasPorPromotor} cadenaDeSala={cadenaDeSala} chartsReady={chartsReady}/>
+          <MetricasSection data={ventasTodas} marcaciones={marc} jornadasEsperadasPorPromotor={jornadasEsperadasPorPromotor} cadenaDeSala={cadenaDeSala} comisionesPorCadena={comisionesPorCadena} pagoFijoPorPromotor={pagoFijoPorPromotor} chartsReady={chartsReady}/>
 
           {/* TABLA MARCACIONES */}
           <div className="sec-title">Registro de marcaciones</div>
@@ -593,13 +709,19 @@ function Dashboard({ onLogout }) {
 
           {/* VENTAS B2B LIDER */}
           {b2b.length > 0 && <VentasB2BSection data={b2b}/>}
-          {b2b.length > 0 && <ComisionesSection data={b2b} marcaciones={marc} cadenaDeSala={cadenaDeSala}/>}
-          {b2b.length === 0 && cadenaSel!=="todas" && cadenaSel!=="Walmart" && (
+          {(cadenaSel==="Easy") && (data?.ventasEasy||[]).length===0 && (
             <div style={{background:"#EFF6FF",border:"1px solid #BFDBFE",borderRadius:12,padding:14,marginTop:20,color:"#1D4ED8",display:"flex",gap:8,fontSize:13}}>
               <AlertCircle size={16} style={{flexShrink:0,marginTop:1}}/>
-              <span>La cadena <b>{cadenaSel}</b> todavía no tiene un feed automático de ventas — el reporte B2B que llega hoy es solo de Lider (Walmart). Las jornadas y el pago fijo de este equipo sí se calculan normalmente.</span>
+              <span>Todavía no hay ventas cargadas para Easy — agrega filas en la hoja "VentasEasy" (Fecha, Sala, Producto, Unidades) para que se calcule la comisión. Las jornadas y el pago fijo de este equipo sí se calculan normalmente.</span>
             </div>
           )}
+          {(cadenaSel==="Tottus") && (data?.ventasTottus||[]).length===0 && (
+            <div style={{background:"#EFF6FF",border:"1px solid #BFDBFE",borderRadius:12,padding:14,marginTop:20,color:"#1D4ED8",display:"flex",gap:8,fontSize:13}}>
+              <AlertCircle size={16} style={{flexShrink:0,marginTop:1}}/>
+              <span>Todavía no hay ventas cargadas para Tottus — agrega filas en la hoja "VentasTottus" (Fecha, Sala, Producto, Unidades) para que se calcule la comisión. Las jornadas y el pago fijo de este equipo sí se calculan normalmente.</span>
+            </div>
+          )}
+          {ventasTodas.length > 0 && <ComisionesSection data={ventasTodas} marcaciones={marc} cadenaDeSala={cadenaDeSala} comisionesPorCadena={comisionesPorCadena} pagoFijoPorPromotor={pagoFijoPorPromotor}/>}
 
           {/* FOTOS DE GÓNDOLA */}
           {data.fotos?.length > 0 && <>
@@ -714,8 +836,9 @@ function ChartsRenderer({ ventasPorProd, ventasPorProm, ready }) {
 }
 
 /* ══════════════════ MÉTRICAS DE DESEMPEÑO ══════════════════ */
-function MetricasSection({ data, marcaciones, jornadasEsperadasPorPromotor, cadenaDeSala, chartsReady }) {
-  // Cruza B2B (ya asignado por sala+fecha, ver asignarPromotorB2B) con marcaciones para
+function MetricasSection({ data, marcaciones, jornadasEsperadasPorPromotor, cadenaDeSala, comisionesPorCadena, pagoFijoPorPromotor, chartsReady }) {
+  // Cruza ventas (Walmart+Easy+Tottus, ya normalizadas y asignadas por sala+fecha, ver
+  // asignarPromotorB2B/asignarPromotorPorSala en el Dashboard) con marcaciones para
   // jornadas/cumplimiento/tendencia. porFecha guarda TODA la venta detectada por día (para
   // el gráfico de tendencia); totalQty/totalCom sólo suman días con jornada AM+PM completa,
   // igual que ComisionesSection, para que el promedio por jornada sea consistente.
@@ -723,22 +846,21 @@ function MetricasSection({ data, marcaciones, jornadasEsperadasPorPromotor, cade
     const m = {};
     data.forEach(r=>{
       if (!r._promotor) return;
-      const qty = parseFloat(r["POS Qty"]||0);
-      if (qty<=0) return;
-      const com = qty*getComision(r["Item Desc 1"]);
-      const fecha = normFecha(r["Fecha"]||"");
-      if (!m[r._promotor]) m[r._promotor] = { nombre:r._promotor, sala: limpiaSala(r["Store Name"]), porFecha:{} };
-      if (!m[r._promotor].porFecha[fecha]) m[r._promotor].porFecha[fecha] = { qty:0, com:0 };
-      m[r._promotor].porFecha[fecha].qty += qty;
-      m[r._promotor].porFecha[fecha].com += com;
+      if (r.qty<=0) return;
+      const com = r.qty*getComisionCadena(comisionesPorCadena, r._cadena, r.producto);
+      if (!m[r._promotor]) m[r._promotor] = { nombre:r._promotor, porFecha:{} };
+      if (!m[r._promotor].porFecha[r.fecha]) m[r._promotor].porFecha[r.fecha] = { qty:0, com:0 };
+      m[r._promotor].porFecha[r.fecha].qty += r.qty;
+      m[r._promotor].porFecha[r.fecha].com += com;
     });
-    // Promotores con marcaciones pero sin ventas B2B igual deben aparecer en el ranking
+    // Promotores con marcaciones pero sin ventas registradas igual deben aparecer en el ranking
     (marcaciones||[]).forEach(r=>{
       const nombre = r["Promotor"]; if (!nombre) return;
-      if (!m[nombre]) m[nombre] = { nombre, sala: limpiaSala(r["Sala"]), porFecha:{} };
+      if (!m[nombre]) m[nombre] = { nombre, porFecha:{} };
     });
     Object.values(m).forEach(p=>{
       const marcProm = (marcaciones||[]).filter(r=>r["Promotor"]===p.nombre);
+      p.sala = limpiaSala(marcProm[0]?.["Sala"]) || "—";
       p.cadena = cadenaDeSala?.(marcProm[0]?.["Sala"]) || "Sin definir";
       const dias = {};
       marcProm.forEach(r=>{
@@ -759,7 +881,7 @@ function MetricasSection({ data, marcaciones, jornadasEsperadasPorPromotor, cade
 
   const ranking = useMemo(()=>porPromotor
     .map(p=>{
-      const pagoJornadas = p.jornadasCompletas*PAGO_JORNADA;
+      const pagoJornadas = p.jornadasCompletas*(pagoFijoPorPromotor?.[p.nombre]||PAGO_JORNADA);
       // Jornadas esperadas viene del cronograma real de cada promotor (hoja Promotores).
       // Si no hay cronograma cargado para alguien, no hay con qué comparar — se usa su
       // propio jornadasCompletas como base para no mostrar un % inflado o sin sentido.
@@ -775,7 +897,7 @@ function MetricasSection({ data, marcaciones, jornadasEsperadasPorPromotor, cade
       };
     })
     .sort((a,b)=>b.total-a.total),
-  [porPromotor, jornadasEsperadasPorPromotor]);
+  [porPromotor, jornadasEsperadasPorPromotor, pagoFijoPorPromotor]);
 
   const promJornadaEquipo = useMemo(()=>{
     const totalQty = ranking.reduce((s,p)=>s+p.totalQty,0);
@@ -829,7 +951,7 @@ function MetricasSection({ data, marcaciones, jornadasEsperadasPorPromotor, cade
         <div>
           <div style={{fontSize:11,opacity:.75,textTransform:"uppercase",letterSpacing:".08em",marginBottom:4}}>Promedio de ventas por jornada activada</div>
           <div style={{fontSize:32,fontWeight:700,letterSpacing:"-.02em"}}>{promJornadaEquipo.toFixed(1)} u</div>
-          <div style={{fontSize:12,opacity:.7,marginTop:4}}>Unidades B2B ÷ jornadas completadas (AM+PM) · equipo completo</div>
+          <div style={{fontSize:12,opacity:.7,marginTop:4}}>Unidades (todas las cadenas) ÷ jornadas completadas (AM+PM) · equipo completo</div>
         </div>
         <TrendingUp size={40} style={{opacity:.3}}/>
       </div>
@@ -837,7 +959,7 @@ function MetricasSection({ data, marcaciones, jornadasEsperadasPorPromotor, cade
       <div className="card" style={{padding:0,overflowX:"auto"}}>
         <table className="table">
           <thead>
-            <tr><th>#</th><th>Promotor</th><th>Sala</th><th>Cadena</th><th>Jornadas</th><th>Cumplimiento</th><th>Unidades B2B</th><th>Prom./Jornada</th><th>Comisión B2B</th><th>Total</th></tr>
+            <tr><th>#</th><th>Promotor</th><th>Sala</th><th>Cadena</th><th>Jornadas</th><th>Cumplimiento</th><th>Unidades</th><th>Prom./Jornada</th><th>Comisión</th><th>Total</th></tr>
           </thead>
           <tbody>
             {ranking.map((p,i)=>(
@@ -882,47 +1004,45 @@ function MetricasSection({ data, marcaciones, jornadasEsperadasPorPromotor, cade
 }
 
 /* ══════════════════ COMISIONES POR PROMOTOR ══════════════════ */
-function ComisionesSection({ data, marcaciones }) {
+function ComisionesSection({ data, marcaciones, cadenaDeSala, comisionesPorCadena, pagoFijoPorPromotor }) {
   const [expanded, setExpanded] = useState(null);
 
-  // Calcular comisiones por promotor cruzando B2B (ya asignado por sala+fecha, ver
-  // asignarPromotorB2B) con marcaciones, para saber cuántas jornadas completó cada uno.
+  // Calcular comisiones por promotor cruzando ventas (Walmart+Easy+Tottus, ya normalizadas
+  // y asignadas por sala+fecha, ver asignarPromotorB2B/asignarPromotorPorSala en el
+  // Dashboard) con marcaciones, para saber cuántas jornadas completó cada uno.
   const { porPromotor, sinAsignar } = useMemo(()=>{
     const m = {};
     let sinAsignarQty = 0, sinAsignarCom = 0;
 
     data.forEach(r=>{
-      const qty = parseFloat(r["POS Qty"]||0);
-      if (qty <= 0) return;
-      const com = qty * getComision(r["Item Desc 1"]);
-      // Solo cuenta como "sin asignar" venta de una tienda propia de Nanolife sin cruce.
-      // Venta B2B de tiendas donde el equipo no tiene promotor (reporte nacional de Lider)
-      // se ignora silenciosamente: es esperada, no una falla de cruce.
-      if (!r._promotor) { if (r._tiendaPropia) { sinAsignarQty += qty; sinAsignarCom += com; } return; }
-      const fecha = normFecha(r["Fecha"]||"");
-      const prod  = r["Item Desc 1"]||"";
+      if (r.qty <= 0) return;
+      const com = r.qty * getComisionCadena(comisionesPorCadena, r._cadena, r.producto);
+      // Solo cuenta como "sin asignar" venta que debería haber calzado con una marcación
+      // (venta B2B de tiendas donde el equipo no tiene promotor -- reporte nacional de
+      // Lider -- se ignora silenciosamente vía _flagSinAsignar=false: es esperada).
+      if (!r._promotor) { if (r._flagSinAsignar) { sinAsignarQty += r.qty; sinAsignarCom += com; } return; }
 
       if (!m[r._promotor]) m[r._promotor] = {
         nombre: r._promotor,
-        sala: limpiaSala(r["Store Name"]),
         jornadasCompletas: 0,
         pagoJornadas: 0,
         porFecha: {},
       };
 
-      if (!m[r._promotor].porFecha[fecha]) m[r._promotor].porFecha[fecha] = { qty:0, com:0, prods:[] };
-      m[r._promotor].porFecha[fecha].qty += qty;
-      m[r._promotor].porFecha[fecha].com += com;
-      m[r._promotor].porFecha[fecha].prods.push({ prod, qty, com });
+      if (!m[r._promotor].porFecha[r.fecha]) m[r._promotor].porFecha[r.fecha] = { qty:0, com:0, prods:[] };
+      m[r._promotor].porFecha[r.fecha].qty += r.qty;
+      m[r._promotor].porFecha[r.fecha].com += com;
+      m[r._promotor].porFecha[r.fecha].prods.push({ prod:r.producto, qty:r.qty, com, cadena:r._cadena });
     });
 
-    // Jornadas completas (AM+PM) y totales: solo se cobra comisión B2B de días
+    // Jornadas completas (AM+PM) y totales: solo se cobra comisión de días
     // efectivamente trabajados, para que el resumen y el detalle por día siempre calcen.
     Object.values(m).forEach(p=>{
+      const marcProm = (marcaciones||[]).filter(r=>r["Promotor"]===p.nombre);
+      p.sala = limpiaSala(marcProm[0]?.["Sala"]) || "—";
+      p.cadena = cadenaDeSala?.(marcProm[0]?.["Sala"]) || "Sin definir";
       const dias = {};
-      (marcaciones||[])
-        .filter(r=>r["Promotor"]===p.nombre)
-        .forEach(r=>{
+      marcProm.forEach(r=>{
           const k = normFecha(r["Fecha"]||"");
           if (!k) return;
           if (!dias[k]) dias[k]={ae:0,as:0,pe:0,ps:0};
@@ -935,7 +1055,7 @@ function ComisionesSection({ data, marcaciones }) {
         Object.entries(dias).filter(([,d])=>d.ae&&d.as&&d.pe&&d.ps).map(([f])=>f)
       );
       p.jornadasCompletas = fechasTrabajadas.size;
-      p.pagoJornadas = p.jornadasCompletas * PAGO_JORNADA;
+      p.pagoJornadas = p.jornadasCompletas * (pagoFijoPorPromotor?.[p.nombre]||PAGO_JORNADA);
       Object.keys(p.porFecha).forEach(f=>{ if(!fechasTrabajadas.has(f)) delete p.porFecha[f]; });
       fechasTrabajadas.forEach(f=>{ if(!p.porFecha[f]) p.porFecha[f]={qty:0,com:0,prods:[]}; });
       // totalQty/totalCom se recalculan desde porFecha ya filtrado, para que el header
@@ -948,7 +1068,7 @@ function ComisionesSection({ data, marcaciones }) {
       porPromotor: Object.values(m).sort((a,b)=>(b.totalCom+b.pagoJornadas)-(a.totalCom+a.pagoJornadas)),
       sinAsignar: { qty: sinAsignarQty, com: sinAsignarCom },
     };
-  }, [data, marcaciones]);
+  }, [data, marcaciones, cadenaDeSala, comisionesPorCadena, pagoFijoPorPromotor]);
 
   if (!porPromotor.length) return null;
 
@@ -958,15 +1078,15 @@ function ComisionesSection({ data, marcaciones }) {
   return (
     <>
       <div className="sec-title" style={{marginTop:20}}>
-        Comisiones por promotor · Sell Out B2B (solo cadena Walmart)
+        Comisiones por promotor · todas las cadenas
       </div>
 
       {/* Total general */}
       <div style={{background:"linear-gradient(135deg,#0A4C52,#0E6F76)",borderRadius:16,padding:"16px 20px",marginBottom:14,color:"#fff",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <div>
-          <div style={{fontSize:11,opacity:.75,textTransform:"uppercase",letterSpacing:".08em",marginBottom:4}}>Total a pagar al equipo (jornadas de todas las cadenas + comisión B2B Walmart)</div>
+          <div style={{fontSize:11,opacity:.75,textTransform:"uppercase",letterSpacing:".08em",marginBottom:4}}>Total a pagar al equipo</div>
           <div style={{fontSize:32,fontWeight:700,letterSpacing:"-.02em"}}>{fmtCLP(totalGeneral)}</div>
-          <div style={{fontSize:12,opacity:.7,marginTop:4}}>Jornadas + Comisiones B2B · {porPromotor.length} promotores con venta Walmart</div>
+          <div style={{fontSize:12,opacity:.7,marginTop:4}}>Jornadas + Comisiones · {porPromotor.length} promotores con venta registrada</div>
         </div>
         <TrendingUp size={40} style={{opacity:.3}}/>
       </div>
@@ -974,7 +1094,7 @@ function ComisionesSection({ data, marcaciones }) {
       {sinAsignar.qty > 0 && (
         <div style={{background:"#FEF3E2",border:"1px solid #FDE4B8",borderRadius:12,padding:"10px 14px",marginBottom:14,fontSize:12,color:"#B45309",display:"flex",gap:8,alignItems:"flex-start"}}>
           <AlertCircle size={14} style={{flexShrink:0,marginTop:1}}/>
-          <span>{Math.round(sinAsignar.qty)} unidades ({fmtCLP(sinAsignar.com)}) de venta B2B no se pudieron asociar a un promotor: la tienda no tiene ninguna marcación ese día, o marcaron dos promotores distintos en la misma sala.</span>
+          <span>{Math.round(sinAsignar.qty)} unidades ({fmtCLP(sinAsignar.com)}) no se pudieron asociar a un promotor: la tienda no tiene ninguna marcación ese día, o marcaron dos promotores distintos en la misma sala.</span>
         </div>
       )}
 
@@ -998,7 +1118,10 @@ function ComisionesSection({ data, marcaciones }) {
                   </div>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontWeight:700,fontSize:14}}>{p.nombre}</div>
-                    <div style={{fontSize:12,color:"#64748B",marginTop:1}}>{p.sala}</div>
+                    <div style={{fontSize:12,color:"#64748B",marginTop:1,display:"flex",alignItems:"center",gap:6}}>
+                      {p.sala}
+                      <span className={`badge ${CADENA_BADGE[p.cadena]||"badge-off"}`} style={{fontSize:9}}>{p.cadena}</span>
+                    </div>
                     {/* Barra de progreso */}
                     <div style={{height:4,background:"#F1F5F9",borderRadius:2,marginTop:6,overflow:"hidden"}}>
                       <div style={{height:"100%",width:`${pct}%`,background:color,borderRadius:2,transition:"width .4s"}}/>
@@ -1024,7 +1147,7 @@ function ComisionesSection({ data, marcaciones }) {
                     {[
                       ["Jornadas", p.jornadasCompletas, fmtCLP(p.pagoJornadas)],
                       ["Unidades", Math.round(p.totalQty), "vendidas"],
-                      ["Comisión B2B", fmtCLP(p.totalCom), "por ventas"],
+                      ["Comisión", fmtCLP(p.totalCom), "por ventas"],
                     ].map(([lbl,val,sub])=>(
                       <div key={lbl} style={{background:"#fff",borderRadius:10,padding:"10px 12px",border:"1px solid #E2E8F0"}}>
                         <div style={{fontSize:10,color:"#64748B",fontWeight:600,textTransform:"uppercase",letterSpacing:".06em",marginBottom:4}}>{lbl}</div>
