@@ -107,51 +107,59 @@ function construirMapaSalas(salas) {
   return m;
 }
 
-function asignarPromotorB2B(b2bRows, marcaciones, salasInfo) {
-  const porFechaStoreNbr = {};
-  (marcaciones||[]).forEach(r=>{
-    const fecha = normFecha(r["Fecha"]||"");
-    const codigo = salasInfo[normNombre(limpiaSala(r["Sala"]))]?.codigo;
-    const promotor = r["Promotor"];
-    if (!fecha || !codigo || !promotor) return;
-    if (!porFechaStoreNbr[fecha]) porFechaStoreNbr[fecha] = {};
-    if (!porFechaStoreNbr[fecha][codigo]) porFechaStoreNbr[fecha][codigo] = new Set();
-    porFechaStoreNbr[fecha][codigo].add(promotor);
+// Cronograma real: para cada fecha, qué promotor tenía asignada cada salaId, según las
+// columnas salaId_DDmes de la hoja Promotores (Config Sheet). Esta planilla manda para
+// asignar ventas — no depende de si la marcación de asistencia se registró bien o no.
+function construirCronogramaPromotores(promotoresRows) {
+  const porFechaSalaId = {};   // fecha -> { salaId -> promotor }
+  const porPromotorFecha = {}; // promotor -> { fecha -> salaId } (para mostrar la sala del día)
+  (promotoresRows||[]).forEach(p=>{
+    const nombre = p["nombre"]||p["Nombre"];
+    if (!nombre) return;
+    Object.entries(p).forEach(([k,v])=>{
+      if (!k.startsWith("salaId_") || !v) return;
+      const fecha = fechaDeColumnaSalaId(k);
+      if (!fecha) return;
+      if (!porFechaSalaId[fecha]) porFechaSalaId[fecha] = {};
+      porFechaSalaId[fecha][v] = nombre;
+      if (!porPromotorFecha[nombre]) porPromotorFecha[nombre] = {};
+      porPromotorFecha[nombre][fecha] = v;
+    });
   });
-  // El B2B de Lider es nacional: trae venta de tiendas donde Nanolife no tiene promotor
-  // (no están en la hoja Salas). Eso es esperado, no una falla de cruce — se distingue
-  // con _tiendaPropia para no alarmar con "sin asignar" sobre tiendas ajenas al equipo.
-  const codigosPropios = new Set(Object.values(salasInfo).map(s=>s.codigo).filter(Boolean));
-  return b2bRows.map(r=>{
-    const fecha = normFecha(r["Fecha"]||"");
-    const storeNbr = String(parseInt(r["Store Nbr"]||0));
-    const candidatos = porFechaStoreNbr[fecha]?.[storeNbr];
-    const promotor = candidatos && candidatos.size===1 ? [...candidatos][0] : null;
-    // El feed de VentasB2B es el reporte oficial de Lider — todo lo que llega por acá es
-    // cadena Walmart por definición (Easy/Tottus todavía no tienen un feed automático).
-    return { ...r, _promotor: promotor, _tiendaPropia: codigosPropios.has(storeNbr), _cadena: "Walmart" };
-  });
+  return { porFechaSalaId, porPromotorFecha };
 }
 
-// Igual que asignarPromotorB2B, pero para las hojas de carga manual (VentasEasy/
-// VentasTottus): esas cadenas no tienen Store Nbr, así que se cruza directo por el
-// nombre de sala que escribió quien cargó la planilla contra la sala marcada ese día.
-function asignarPromotorPorSala(ventaRows, marcaciones) {
-  const porFechaSala = {};
-  (marcaciones||[]).forEach(r=>{
-    const fecha = normFecha(r["Fecha"]||"");
-    const sala = normNombre(limpiaSala(r["Sala"]));
-    const promotor = r["Promotor"];
-    if (!fecha || !sala || !promotor) return;
-    if (!porFechaSala[fecha]) porFechaSala[fecha] = {};
-    if (!porFechaSala[fecha][sala]) porFechaSala[fecha][sala] = new Set();
-    porFechaSala[fecha][sala].add(promotor);
+// Mapa salaId (ej. "s06") → { codigo (Store Nbr), nombre, cadena }, desde la hoja Salas.
+function construirMapaSalasPorId(salas) {
+  const m = {};
+  (salas||[]).forEach(s=>{
+    const id = s["id"]||s["ID"];
+    if (!id) return;
+    const nombreRaw = s["nombre"]||s["Nombre"]||"";
+    const codigoNum = String(parseInt(s["codigo"]||s["Código"]||s["Codigo"]||0));
+    const cadena = (s["cadena"]||s["Cadena"]||"").trim() || inferirCadena(nombreRaw);
+    m[id] = { codigo: (codigoNum && codigoNum!=="0") ? codigoNum : null, nombre: nombreRaw, cadena };
   });
+  return m;
+}
+
+// Asigna cada venta (Walmart por Store Nbr, o Easy/Tottus por nombre de sala) al promotor
+// que el CRONOGRAMA dice que trabajaba esa sala ese día — independiente de las marcaciones.
+// matchKey: "codigo" para Walmart (Store Nbr), "nombre" para cadenas de carga manual.
+function asignarPromotorPorCronograma(ventaRows, cronograma, salasPorId, matchKey) {
   return ventaRows.map(r=>{
     const fecha = normFecha(r["Fecha"]||"");
-    const sala = normNombre(limpiaSala(r["Sala"]||r["Tienda"]||""));
-    const candidatos = porFechaSala[fecha]?.[sala];
-    const promotor = candidatos && candidatos.size===1 ? [...candidatos][0] : null;
+    const claveVenta = matchKey==="codigo"
+      ? String(parseInt(r["Store Nbr"]||0))
+      : normNombre(r["Sala"]||r["Tienda"]||"");
+    const salasDelDia = cronograma.porFechaSalaId[fecha] || {};
+    let promotor = null;
+    for (const [salaId, prom] of Object.entries(salasDelDia)) {
+      const info = salasPorId[salaId];
+      if (!info) continue;
+      const claveSala = matchKey==="codigo" ? info.codigo : normNombre(info.nombre);
+      if (claveSala && claveSala===claveVenta) { promotor = prom; break; }
+    }
     return { ...r, _promotor: promotor };
   });
 }
@@ -347,6 +355,17 @@ function Dashboard({ onLogout }) {
   const salasInfo = useMemo(()=>construirMapaSalas(data?.salas||[]),[data]);
   const cadenaDeSala = sala => salasInfo[normNombre(limpiaSala(sala))]?.cadena || inferirCadena(sala);
 
+  // Cronograma real (hoja Promotores, columnas salaId_DDmes) y detalle de cada sala por
+  // salaId (hoja Salas) — la fuente de verdad para asignar ventas a un promotor, en vez de
+  // depender de si la marcación de asistencia se registró bien ese día.
+  const cronograma = useMemo(()=>construirCronogramaPromotores(data?.promotores||[]),[data]);
+  const salasPorId = useMemo(()=>construirMapaSalasPorId(data?.salas||[]),[data]);
+  // Sala (nombre) en la que el cronograma dice que trabajó un promotor una fecha dada.
+  const salaDelDia = (promotor, fecha) => {
+    const salaId = cronograma.porPromotorFecha[promotor]?.[fecha];
+    return salaId ? salasPorId[salaId]?.nombre : null;
+  };
+
   const cadenasDisponibles = useMemo(()=>{
     if(!data) return [];
     return [...new Set(data.marcaciones.map(r=>cadenaDeSala(r["Sala"])).filter(Boolean))].sort();
@@ -361,13 +380,21 @@ function Dashboard({ onLogout }) {
   const vent = useMemo(()=>data?.ventas.filter(r=>fechasFilt.includes(normFecha(r["Fecha"]))&&filtraSalaProm(r))||[],[data,fechasFilt,salaSel,promotorSel,cadenaSel,salasInfo]);
   const cierresFilt = useMemo(()=>data?.cierres.filter(r=>fechasFilt.includes(normFecha(r["Fecha"]))&&filtraSalaProm(r))||[],[data,fechasFilt,salaSel,promotorSel,cadenaSel,salasInfo]);
 
-  // Cruza cada venta B2B con la sala marcada ese día para saber a qué promotor corresponde
-  // (ver asignarPromotorB2B). Reemplaza el mapeo fijo Store Nbr → promotor, que quedaba
-  // desactualizado cada vez que cambiaba el equipo o se sumaban tiendas nuevas.
+  // Asigna cada venta B2B al promotor que el CRONOGRAMA dice que trabajaba esa tienda
+  // (Store Nbr) ese día — independiente de si marcó asistencia o no (ver
+  // asignarPromotorPorCronograma). Reemplaza el cruce por marcaciones.
+  const codigosPropios = useMemo(()=>new Set(Object.values(salasPorId).map(s=>s.codigo).filter(Boolean)),[salasPorId]);
   const b2bAsignado = useMemo(()=>{
     const filtradoFecha = (data?.ventasB2B||[]).filter(r=>fechasFilt.includes(normFecha(r["Fecha"])));
-    return asignarPromotorB2B(filtradoFecha, data?.marcaciones||[], salasInfo);
-  },[data,fechasFilt,salasInfo]);
+    return asignarPromotorPorCronograma(filtradoFecha, cronograma, salasPorId, "codigo").map(r=>({
+      ...r,
+      // El B2B de Lider es nacional: trae venta de tiendas donde Nanolife no tiene
+      // promotor. Eso es esperado, no una falla de cruce — se distingue con
+      // _tiendaPropia para no alarmar con "sin asignar" sobre tiendas ajenas al equipo.
+      _tiendaPropia: codigosPropios.has(String(parseInt(r["Store Nbr"]||0))),
+      _cadena: "Walmart",
+    }));
+  },[data,fechasFilt,cronograma,salasPorId,codigosPropios]);
 
   const b2b = useMemo(()=>b2bAsignado.filter(r=>{
     // El feed de VentasB2B es 100% cadena Walmart (Lider) — si se filtra por Easy/Tottus
@@ -417,15 +444,15 @@ function Dashboard({ onLogout }) {
   },[data]);
 
   // Easy y Tottus son carga manual (no hay feed automático como el B2B de Lider) — se
-  // cruzan contra la sala marcada ese día por nombre directo, no por Store Nbr.
+  // cruzan contra el CRONOGRAMA por nombre de sala (esas cadenas no tienen Store Nbr).
   const easyAsignado = useMemo(()=>{
     const filtradoFecha = (data?.ventasEasy||[]).filter(r=>fechasFilt.includes(normFecha(r["Fecha"])));
-    return asignarPromotorPorSala(filtradoFecha, data?.marcaciones||[]);
-  },[data,fechasFilt]);
+    return asignarPromotorPorCronograma(filtradoFecha, cronograma, salasPorId, "nombre");
+  },[data,fechasFilt,cronograma,salasPorId]);
   const tottusAsignado = useMemo(()=>{
     const filtradoFecha = (data?.ventasTottus||[]).filter(r=>fechasFilt.includes(normFecha(r["Fecha"])));
-    return asignarPromotorPorSala(filtradoFecha, data?.marcaciones||[]);
-  },[data,fechasFilt]);
+    return asignarPromotorPorCronograma(filtradoFecha, cronograma, salasPorId, "nombre");
+  },[data,fechasFilt,cronograma,salasPorId]);
 
   const filtraSalaPromCadena = (r, cadena) =>
     (cadenaSel==="todas" || cadenaSel===cadena) &&
@@ -721,7 +748,7 @@ function Dashboard({ onLogout }) {
               <span>Todavía no hay ventas cargadas para Tottus — agrega filas en la hoja "VentasTottus" (Fecha, Sala, Producto, Unidades) para que se calcule la comisión. Las jornadas y el pago fijo de este equipo sí se calculan normalmente.</span>
             </div>
           )}
-          {ventasTodas.length > 0 && <ComisionesSection data={ventasTodas} marcaciones={marc} cadenaDeSala={cadenaDeSala} comisionesPorCadena={comisionesPorCadena} pagoFijoPorPromotor={pagoFijoPorPromotor}/>}
+          {ventasTodas.length > 0 && <ComisionesSection data={ventasTodas} marcaciones={marc} cadenaDeSala={cadenaDeSala} comisionesPorCadena={comisionesPorCadena} pagoFijoPorPromotor={pagoFijoPorPromotor} salaDelDia={salaDelDia}/>}
 
           {/* FOTOS DE GÓNDOLA */}
           {data.fotos?.length > 0 && <>
@@ -837,8 +864,8 @@ function ChartsRenderer({ ventasPorProd, ventasPorProm, ready }) {
 
 /* ══════════════════ MÉTRICAS DE DESEMPEÑO ══════════════════ */
 function MetricasSection({ data, marcaciones, jornadasEsperadasPorPromotor, cadenaDeSala, comisionesPorCadena, pagoFijoPorPromotor, chartsReady }) {
-  // Cruza ventas (Walmart+Easy+Tottus, ya normalizadas y asignadas por sala+fecha, ver
-  // asignarPromotorB2B/asignarPromotorPorSala en el Dashboard) con marcaciones para
+  // Cruza ventas (Walmart+Easy+Tottus, ya normalizadas y asignadas por CRONOGRAMA, ver
+  // asignarPromotorPorCronograma en el Dashboard) con marcaciones para
   // jornadas/cumplimiento/tendencia. porFecha guarda TODA la venta detectada por día (para
   // el gráfico de tendencia); totalQty/totalCom sólo suman días con jornada AM+PM completa,
   // igual que ComisionesSection, para que el promedio por jornada sea consistente.
@@ -860,7 +887,8 @@ function MetricasSection({ data, marcaciones, jornadasEsperadasPorPromotor, cade
     });
     Object.values(m).forEach(p=>{
       const marcProm = (marcaciones||[]).filter(r=>r["Promotor"]===p.nombre);
-      p.sala = limpiaSala(marcProm[0]?.["Sala"]) || "—";
+      // El promotor no siempre trabaja en la misma sala -- no tiene sentido mostrar una
+      // sola acá (ver Comisiones por promotor para la sala del día en el detalle expandido).
       p.cadena = cadenaDeSala?.(marcProm[0]?.["Sala"]) || "Sin definir";
       const dias = {};
       marcProm.forEach(r=>{
@@ -959,14 +987,13 @@ function MetricasSection({ data, marcaciones, jornadasEsperadasPorPromotor, cade
       <div className="card" style={{padding:0,overflowX:"auto"}}>
         <table className="table">
           <thead>
-            <tr><th>#</th><th>Promotor</th><th>Sala</th><th>Cadena</th><th>Jornadas</th><th>Cumplimiento</th><th>Unidades</th><th>Prom./Jornada</th><th>Comisión</th><th>Total</th></tr>
+            <tr><th>#</th><th>Promotor</th><th>Cadena</th><th>Jornadas</th><th>Cumplimiento</th><th>Unidades</th><th>Prom./Jornada</th><th>Comisión</th><th>Total</th></tr>
           </thead>
           <tbody>
             {ranking.map((p,i)=>(
               <tr key={p.nombre}>
                 <td style={{fontWeight:700,color:"#94A3B8"}}>{i+1}</td>
                 <td style={{fontWeight:600,fontSize:13}}>{p.nombre}</td>
-                <td style={{fontSize:12,color:"#64748B"}}>{p.sala}</td>
                 <td><span className={`badge ${CADENA_BADGE[p.cadena]||"badge-off"}`}>{p.cadena}</span></td>
                 <td style={{fontSize:13,whiteSpace:"nowrap"}}>{p.jornadasCompletas}/{p.esperadas}</td>
                 <td>
@@ -1004,11 +1031,11 @@ function MetricasSection({ data, marcaciones, jornadasEsperadasPorPromotor, cade
 }
 
 /* ══════════════════ COMISIONES POR PROMOTOR ══════════════════ */
-function ComisionesSection({ data, marcaciones, cadenaDeSala, comisionesPorCadena, pagoFijoPorPromotor }) {
+function ComisionesSection({ data, marcaciones, cadenaDeSala, comisionesPorCadena, pagoFijoPorPromotor, salaDelDia }) {
   const [expanded, setExpanded] = useState(null);
 
   // Calcular comisiones por promotor cruzando ventas (Walmart+Easy+Tottus, ya normalizadas
-  // y asignadas por sala+fecha, ver asignarPromotorB2B/asignarPromotorPorSala en el
+  // y asignadas por CRONOGRAMA, ver asignarPromotorPorCronograma en el
   // Dashboard) con marcaciones, para saber cuántas jornadas completó cada uno.
   const { porPromotor, sinAsignar } = useMemo(()=>{
     const m = {};
@@ -1161,7 +1188,10 @@ function ComisionesSection({ data, marcaciones, cadenaDeSala, comisionesPorCaden
                   {Object.entries(p.porFecha).sort((a,b)=>b[0].localeCompare(a[0])).map(([fecha, d])=>(
                     <div key={fecha} style={{marginBottom:10,background:"#fff",borderRadius:10,border:"1px solid #E2E8F0",overflow:"hidden"}}>
                       <div style={{padding:"8px 12px",background:"#F0FDF4",borderBottom:"1px solid #DCFCE7",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                        <span style={{fontWeight:600,fontSize:13,textTransform:"capitalize"}}>{fmtFecha(fecha)}</span>
+                        <div>
+                          <div style={{fontWeight:600,fontSize:13,textTransform:"capitalize"}}>{fmtFecha(fecha)}</div>
+                          {salaDelDia?.(p.nombre,fecha) && <div style={{fontSize:11,color:"#64748B",marginTop:1}}>{limpiaSala(salaDelDia(p.nombre,fecha))}</div>}
+                        </div>
                         <span style={{fontWeight:700,fontSize:13,color:"#15803D"}}>{Math.round(d.qty)} u · {fmtCLP(d.com)}</span>
                       </div>
                       {d.prods.map((v,j)=>(
