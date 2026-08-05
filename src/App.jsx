@@ -60,18 +60,23 @@ const normFecha = f => {
 const limpiaSala = s => s?.replace("Hiper Lider - ","").replace("Lider Express - ","") || s;
 const normNombre = s => (s||"").toString().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/\s+/g," ").toUpperCase().trim();
 
-// La hoja Promotores trae columnas salaId_DDmes (ej. "salaId_19jun") con la sala asignada
-// ese día — es el cronograma real de cada promotor, usado por la app de promotores para
-// saber dónde le toca trabajar. Se usa acá para saber cuántas jornadas se ESPERABAN de
-// cada uno (no un número parejo para todo el equipo). El año no viene en la columna, se
-// asume el año en curso — igual que hace la propia app de promotores.
-const MESES_EN = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+// La hoja Promotores trae columnas salaId_DDmes (ej. "salaId_19jun", "salaId_01ago") con la
+// sala asignada ese día — es el cronograma real de cada promotor, usado por la app de
+// promotores para saber dónde le toca trabajar. Se usa acá para saber cuántas jornadas se
+// ESPERABAN de cada uno (no un número parejo para todo el equipo). El año no viene en la
+// columna, se asume el año en curso — igual que hace la propia app de promotores.
+// La abreviación del mes se ha visto en inglés ("aug") Y en español ("ago") según quién
+// cargó la columna — se aceptan ambas para no perder jornadas silenciosamente.
+const MESES_IDX = {
+  ene:1, jan:1, feb:2, mar:3, abr:4, apr:4, may:5, jun:6, jul:7,
+  ago:8, aug:8, sep:9, oct:10, nov:11, dic:12, dec:12,
+};
 function fechaDeColumnaSalaId(key) {
   const m = key.match(/^salaId_(\d{2})([a-z]{3})$/);
   if (!m) return null;
-  const monIdx = MESES_EN.indexOf(m[2]);
-  if (monIdx < 0) return null;
-  return `${new Date().getFullYear()}-${String(monIdx+1).padStart(2,"0")}-${m[1]}`;
+  const mes = MESES_IDX[m[2]];
+  if (!mes) return null;
+  return `${new Date().getFullYear()}-${String(mes).padStart(2,"0")}-${m[1]}`;
 }
 
 // Asigna cada fila de venta B2B al promotor correspondiente cruzando por sala+fecha
