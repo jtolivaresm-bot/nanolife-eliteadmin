@@ -744,15 +744,16 @@ function Dashboard({ onLogout }) {
           {(cadenaSel==="Easy") && (data?.ventasEasy||[]).length===0 && (
             <div style={{background:"#EFF6FF",border:"1px solid #BFDBFE",borderRadius:12,padding:14,marginTop:20,color:"#1D4ED8",display:"flex",gap:8,fontSize:13}}>
               <AlertCircle size={16} style={{flexShrink:0,marginTop:1}}/>
-              <span>Todavía no hay ventas cargadas para Easy — agrega filas en la hoja "VentasEasy" (Fecha, Sala, Producto, Unidades) para que se calcule la comisión. Las jornadas y el pago fijo de este equipo sí se calculan normalmente.</span>
+              <span>Aún no llega venta diaria de Easy desde el admin retail. Las jornadas y el pago fijo de este equipo sí se calculan normalmente.</span>
             </div>
           )}
           {(cadenaSel==="Tottus") && (data?.ventasTottus||[]).length===0 && (
             <div style={{background:"#EFF6FF",border:"1px solid #BFDBFE",borderRadius:12,padding:14,marginTop:20,color:"#1D4ED8",display:"flex",gap:8,fontSize:13}}>
               <AlertCircle size={16} style={{flexShrink:0,marginTop:1}}/>
-              <span>Todavía no hay ventas cargadas para Tottus — agrega filas en la hoja "VentasTottus" (Fecha, Sala, Producto, Unidades) para que se calcule la comisión. Las jornadas y el pago fijo de este equipo sí se calculan normalmente.</span>
+              <span>Aún no llega venta diaria de Tottus desde el admin retail. Las jornadas y el pago fijo de este equipo sí se calculan normalmente.</span>
             </div>
           )}
+          <RetailNoAtribuibleAviso rows={data?.ventasRetailNoAtribuibles} cadenaSel={cadenaSel}/>
           {ventasTodas.length > 0 && <ComisionesSection data={ventasTodas} marcaciones={marc} cadenaDeSala={cadenaDeSala} comisionesPorCadena={comisionesPorCadena} pagoFijoPorPromotor={pagoFijoPorPromotor} salaDelDia={salaDelDia}/>}
 
           {/* FOTOS DE GÓNDOLA */}
@@ -1036,6 +1037,34 @@ function MetricasSection({ data, marcaciones, jornadasEsperadasPorPromotor, cade
 }
 
 /* ══════════════════ COMISIONES POR PROMOTOR ══════════════════ */
+// Aviso de venta de retail que NO se pudo atribuir a un promotor porque el dato viene
+// agregado en un bloque de varios días (no diario). Regla del negocio: solo se atribuye
+// venta de un día puntual; lo demás se reporta como error visible, no se reparte ni se
+// asigna a ciegas.
+function RetailNoAtribuibleAviso({ rows, cadenaSel }) {
+  const filtradas = (rows || []).filter(r => cadenaSel === "todas" || r.cadena === cadenaSel);
+  if (!filtradas.length) return null;
+  const porCadena = {};
+  filtradas.forEach(r => {
+    if (!porCadena[r.cadena]) porCadena[r.cadena] = { filas: 0, unidades: 0 };
+    porCadena[r.cadena].filas += 1;
+    porCadena[r.cadena].unidades += Number(r.unidades) || 0;
+  });
+  const totalU = filtradas.reduce((s, r) => s + (Number(r.unidades) || 0), 0);
+  const resumen = Object.entries(porCadena)
+    .map(([c, v]) => `${c}: ${Math.round(v.unidades)} u`).join(" · ");
+  return (
+    <div style={{background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:12,padding:"12px 14px",marginTop:20,color:"#B91C1C",display:"flex",gap:8,fontSize:13,alignItems:"flex-start"}}>
+      <AlertCircle size={16} style={{flexShrink:0,marginTop:1}}/>
+      <span>
+        <b>{Math.round(totalU)} unidades no se pudieron atribuir</b> a un promotor: la venta llega
+        agregada en bloques de varios días (ej. semana completa o Lun–Jue), no por día. La comisión
+        solo se acredita cuando la venta es de un día puntual. <span style={{opacity:.8}}>({resumen})</span>
+      </span>
+    </div>
+  );
+}
+
 function ComisionesSection({ data, marcaciones, cadenaDeSala, comisionesPorCadena, pagoFijoPorPromotor, salaDelDia }) {
   const [expanded, setExpanded] = useState(null);
 
