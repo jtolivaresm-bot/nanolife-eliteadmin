@@ -57,6 +57,79 @@ function toObjects(rows) {
     });
 }
 
+/* ─────────── Integración con la BBDD del admin retail (Canal Moderno) ───────────
+ * El endpoint devuelve la venta de retail YA normalizada y con las reglas de negocio
+ * duras resueltas (bloques de semana, doble fuente Walmart, SKU como string).
+ * Aquí solo tomamos Easy/Tottus (Walmart sigue por su feed B2B diario) y aplicamos la
+ * regla de atribución: la venta se acredita a un promotor SOLO si el dato es de UN día;
+ * si viene agregada en un bloque de varios días, NO se atribuye (se lista como error).
+ */
+const RETAIL_ENDPOINT_URL = process.env.RETAIL_ENDPOINT_URL ||
+  "https://script.google.com/macros/s/AKfycbxXCJUMkVDAqfV0k9CZnadMJRu54yEmEKgHPuVWjXa3fBkSWzOHfOeFVUKeXZSJtoo/exec?action=data";
+
+// Cadenas que tomamos del endpoint. Walmart/Lider NO: ya viene por VentasB2B (diario).
+const CADENAS_RETAIL = { EASY: "Easy", TOTTUS: "Tottus" };
+
+// periodo (bloque de la semana) -> offsets de día desde fecha_inicio (lunes = 0).
+// Un bloque es "de un día" (atribuible) solo si mapea a exactamente un offset.
+const BLOQUE_DIAS = {
+  "L":[0], "M":[1], "X":[2], "J":[3], "V":[4], "S":[5], "D":[6],
+  "L-J":[0,1,2,3], "V-D":[4,5,6], "L-D":[0,1,2,3,4,5,6],
+  "L-V":[0,1,2,3,4], "L-S":[0,1,2,3,4,5],
+};
+
+function sumarDias(iso, n) {
+  const d = new Date(iso + "T12:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Transforma las filas del endpoint (ventas_tottus) en:
+ *  - diarias: filas atribuibles { Fecha, Sala, Producto, Unidades, _cadena, _sku } (bloque de 1 día)
+ *  - noAtribuibles: venta que NO se puede clavar a un día (bloque multi-día o periodo desconocido)
+ * Solo considera las cadenas en `cadenas` (default Easy/Tottus) y unidades > 0.
+ * Función pura (sin red) — testeable en aislamiento.
+ */
+export function normalizarVentasRetail(ventas, cadenas = CADENAS_RETAIL) {
+  const diarias = [];
+  const noAtribuibles = [];
+  for (const r of ventas || []) {
+    const cadKey = String(r.cadena || "").trim().toUpperCase();
+    const cadena = cadenas[cadKey];
+    if (!cadena) continue; // cadena fuera de alcance (ej. LIDER)
+    const unidades = Number(r.unidades) || 0;
+    if (unidades <= 0) continue;
+    const periodo = String(r.periodo || "").trim().toUpperCase();
+    const dias = BLOQUE_DIAS[periodo];
+    if (dias && dias.length === 1 && r.fecha_inicio) {
+      diarias.push({
+        Fecha: sumarDias(r.fecha_inicio, dias[0]),
+        Sala: r.local || "",
+        Producto: r.nombre || String(r.sku || ""),
+        Unidades: unidades,
+        _cadena: cadena,
+        _sku: String(r.sku || ""),
+      });
+    } else {
+      noAtribuibles.push({
+        cadena, local: r.local || "", sku: String(r.sku || ""), nombre: r.nombre || "",
+        anio: r.anio, semana: r.semana, periodo: r.periodo, unidades,
+        motivo: dias ? `venta agregada en bloque de ${dias.length} días (${r.periodo}), no diaria`
+                     : `periodo no reconocido: "${r.periodo}"`,
+      });
+    }
+  }
+  return { diarias, noAtribuibles };
+}
+
+async function fetchVentasRetail(url) {
+  const r = await fetch(url, { redirect: "follow" });
+  if (!r.ok) throw new Error(`retail endpoint ${r.status}`);
+  const j = await r.json();
+  return Array.isArray(j?.ventas_tottus) ? j.ventas_tottus : [];
+}
+
 export const handler = async () => {
   const headers = {
     "Content-Type": "application/json",
@@ -80,7 +153,7 @@ export const handler = async () => {
     // poder cruzar ventas B2B con marcaciones sin depender de un mapeo hardcodeado.
     const configSheetId = process.env.GOOGLE_CONFIG_SHEET_ID;
 
-    const [marcRows, ventasRows, cierresRows, fotosRows, audiosRows, b2bRows, salaRows, promRows, comisionesRows, easyRows, tottusRows] = await Promise.all([
+    const [marcRows, ventasRows, cierresRows, fotosRows, audiosRows, b2bRows, salaRows, promRows, comisionesRows, easyRows, tottusRows, retailRows] = await Promise.all([
       readSheet(token, sheetId, "Marcaciones!A:L"),
       readSheet(token, sheetId, "Ventas!A:J"),
       readSheet(token, sheetId, "Cierres!A:H"),
@@ -94,13 +167,30 @@ export const handler = async () => {
       // Comisiones: tabla Cadena/Producto/Comision -- una fila por producto y cadena, ya
       // que Walmart/Easy/Tottus pueden pagar distinto por el mismo producto.
       configSheetId ? readSheet(token, configSheetId, "Comisiones!A:Z").catch(logFallo("Comisiones")) : Promise.resolve([]),
-      // VentasEasy/VentasTottus: carga manual (no hay feed automático como el B2B de
-      // Lider). Mismo patrón de columnas que VentasB2B pero simplificado: Fecha/Sala/
-      // Producto/Unidades -- se cruza contra marcaciones por nombre de sala, no por
-      // Store Nbr (esas cadenas no tienen ese código).
+      // VentasEasy/VentasTottus manuales: quedan como FALLBACK por si el endpoint del
+      // admin retail no responde. La fuente preferida es el endpoint (ver abajo).
       readSheet(token, sheetId, "VentasEasy!A:Z").catch(logFallo("VentasEasy")),
       readSheet(token, sheetId, "VentasTottus!A:Z").catch(logFallo("VentasTottus")),
+      // Endpoint del admin retail (Canal Moderno): venta ya normalizada de Easy/Tottus/Lider.
+      fetchVentasRetail(RETAIL_ENDPOINT_URL).catch(err => { console.error("sheet-data: fallo endpoint retail:", err.message); return null; }),
     ]);
+
+    // Easy/Tottus: preferimos el endpoint. Solo se atribuye venta de UN día; los bloques
+    // multi-día no se atribuyen (regla del negocio) y se reportan aparte para mostrarlos
+    // como error visible en el panel. Si el endpoint falló (retailRows===null), caemos a
+    // las hojas manuales para no quedar ciegos.
+    let ventasEasy, ventasTottus, ventasRetailNoAtribuibles = [], retailFuente;
+    if (retailRows) {
+      const { diarias, noAtribuibles } = normalizarVentasRetail(retailRows);
+      ventasEasy    = diarias.filter(r => r._cadena === "Easy");
+      ventasTottus  = diarias.filter(r => r._cadena === "Tottus");
+      ventasRetailNoAtribuibles = noAtribuibles;
+      retailFuente = "endpoint";
+    } else {
+      ventasEasy   = toObjects(easyRows);
+      ventasTottus = toObjects(tottusRows);
+      retailFuente = "hojas-manuales (fallback: endpoint no respondió)";
+    }
 
     return {
       statusCode: 200,
@@ -115,8 +205,10 @@ export const handler = async () => {
         salas: toObjects(salaRows),
         promotores: toObjects(promRows),
         comisiones: toObjects(comisionesRows),
-        ventasEasy: toObjects(easyRows),
-        ventasTottus: toObjects(tottusRows),
+        ventasEasy,
+        ventasTottus,
+        ventasRetailNoAtribuibles,
+        retailFuente,
         updatedAt: new Date().toISOString(),
       }),
     };
