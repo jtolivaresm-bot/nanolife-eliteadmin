@@ -160,8 +160,9 @@ export function mapDiariaWalmart(rows) {
       // (ej. "deterg podsx10 un" → "DETERG PODSX10 UN").
       "Item Desc 1": (r["Nombre Producto Cadena"] || r["Nombre Producto Proveedor"] || "")
         .toUpperCase().replace(/\s+/g, " ").trim(),
-      "POS Qty": parseFloat(r["Venta unidades"] || r["Venta Unidades"] || 0) || 0,
-      "POS Sales": parseFloat(r["Venta pesos"] || 0) || 0,
+      // Como STRING, igual que VentasB2B: el frontend hace ("POS Sales"||"0").replace(...).
+      "POS Qty": String(r["Venta unidades"] ?? r["Venta Unidades"] ?? "").trim() || "0",
+      "POS Sales": String(r["Venta pesos"] ?? "").trim() || "0",
     };
   }).filter(r => r["Store Nbr"] && r["Fecha"]);
 }
