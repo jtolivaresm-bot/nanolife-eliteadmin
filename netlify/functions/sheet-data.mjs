@@ -127,7 +127,43 @@ async function fetchVentasRetail(url) {
   const r = await fetch(url, { redirect: "follow" });
   if (!r.ok) throw new Error(`retail endpoint ${r.status}`);
   const j = await r.json();
-  return Array.isArray(j?.ventas_tottus) ? j.ventas_tottus : [];
+  // Si el endpoint devuelve un error (ej. {ok:false,error:"sesion_invalida"}) o no trae el
+  // arreglo esperado, lanzamos: así el .catch de arriba deja retailRows=null y se cae al
+  // fallback de hojas manuales, en vez de tragarse un [] que bloquea el fallback.
+  if (!j || j.ok === false || !Array.isArray(j.ventas_tottus)) {
+    throw new Error(`retail endpoint sin datos${j && j.error ? ": " + j.error : ""}`);
+  }
+  return j.ventas_tottus;
+}
+
+/* ─────────── Venta DIARIA de Walmart desde la BBDD Canal Moderno ───────────
+ * La venta de Walmart que Elite mostraba salía de la pestaña VentasB2B, que quedó
+ * desactualizada. La fuente viva ahora es la pestaña "BBDD DIARIA WALMART" del Sheet del
+ * admin retail (una fila por día × local × producto). La leemos con la service account
+ * (el Sheet está compartido con ella) y la mapeamos al MISMO shape que VentasB2B, para que
+ * el cruce por Store Nbr + cronograma y el cálculo de comisiones sigan funcionando igual.
+ */
+const RETAIL_SHEET_ID = process.env.GOOGLE_RETAIL_SHEET_ID || "1srESb2rRPL2TN0tcS2MusmXEGmTOENbsURWPHHqEH-8";
+
+export function mapDiariaWalmart(rows) {
+  return (rows || []).map(r => {
+    // "Código Local" viene como "W78" → el Store Nbr es la parte numérica (78), que calza
+    // con salas.codigo. asignarPromotorPorCronograma hace parseInt, así que hay que darle
+    // el número limpio, no "W78".
+    const storeNbr = String(r["Código Local"] || r["Codigo Local"] || "").replace(/\D/g, "");
+    return {
+      "Fecha": r["Fecha"] || "",
+      "Store Nbr": storeNbr,
+      "Store Name": r["Nombre Local"] || "",
+      "City": r["Región"] || r["Region"] || "",
+      // El "Nombre Producto Cadena" en MAYÚSCULAS calza con COMISION_WALMART_DEFAULT
+      // (ej. "deterg podsx10 un" → "DETERG PODSX10 UN").
+      "Item Desc 1": (r["Nombre Producto Cadena"] || r["Nombre Producto Proveedor"] || "")
+        .toUpperCase().replace(/\s+/g, " ").trim(),
+      "POS Qty": parseFloat(r["Venta unidades"] || r["Venta Unidades"] || 0) || 0,
+      "POS Sales": parseFloat(r["Venta pesos"] || 0) || 0,
+    };
+  }).filter(r => r["Store Nbr"] && r["Fecha"]);
 }
 
 export const handler = async () => {
@@ -153,7 +189,7 @@ export const handler = async () => {
     // poder cruzar ventas B2B con marcaciones sin depender de un mapeo hardcodeado.
     const configSheetId = process.env.GOOGLE_CONFIG_SHEET_ID;
 
-    const [marcRows, ventasRows, cierresRows, fotosRows, audiosRows, b2bRows, salaRows, promRows, comisionesRows, easyRows, tottusRows, retailRows] = await Promise.all([
+    const [marcRows, ventasRows, cierresRows, fotosRows, audiosRows, b2bRows, salaRows, promRows, comisionesRows, easyRows, tottusRows, retailRows, diariaWalmartRows] = await Promise.all([
       readSheet(token, sheetId, "Marcaciones!A:L"),
       readSheet(token, sheetId, "Ventas!A:J"),
       readSheet(token, sheetId, "Cierres!A:H"),
@@ -173,6 +209,8 @@ export const handler = async () => {
       readSheet(token, sheetId, "VentasTottus!A:Z").catch(logFallo("VentasTottus")),
       // Endpoint del admin retail (Canal Moderno): venta ya normalizada de Easy/Tottus/Lider.
       fetchVentasRetail(RETAIL_ENDPOINT_URL).catch(err => { console.error("sheet-data: fallo endpoint retail:", err.message); return null; }),
+      // Venta DIARIA de Walmart, directo del Sheet del admin retail (compartido con la SA).
+      readSheet(token, RETAIL_SHEET_ID, "'BBDD DIARIA WALMART'!A:T").catch(logFallo("BBDD DIARIA WALMART")),
     ]);
 
     // Easy/Tottus: preferimos el endpoint. Solo se atribuye venta de UN día; los bloques
@@ -192,6 +230,12 @@ export const handler = async () => {
       retailFuente = "hojas-manuales (fallback: endpoint no respondió)";
     }
 
+    // Walmart: fuente preferida = venta diaria de la BBDD Canal Moderno (viva). Si esa
+    // pestaña no trae nada (no compartida / vacía / error), caemos a la pestaña VentasB2B.
+    const diariaWalmart = mapDiariaWalmart(toObjects(diariaWalmartRows));
+    const ventasB2B = diariaWalmart.length ? diariaWalmart : toObjects(b2bRows);
+    const walmartFuente = diariaWalmart.length ? "BBDD DIARIA WALMART" : "VentasB2B (fallback)";
+
     return {
       statusCode: 200,
       headers,
@@ -201,7 +245,7 @@ export const handler = async () => {
         cierres: toObjects(cierresRows),
         fotos: toObjects(fotosRows),
         audios: toObjects(audiosRows),
-        ventasB2B: toObjects(b2bRows),
+        ventasB2B,
         salas: toObjects(salaRows),
         promotores: toObjects(promRows),
         comisiones: toObjects(comisionesRows),
@@ -209,6 +253,7 @@ export const handler = async () => {
         ventasTottus,
         ventasRetailNoAtribuibles,
         retailFuente,
+        walmartFuente,
         updatedAt: new Date().toISOString(),
       }),
     };
