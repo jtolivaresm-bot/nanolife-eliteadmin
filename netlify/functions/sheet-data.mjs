@@ -199,8 +199,10 @@ export const handler = async () => {
       readSheet(token, sheetId, "VentasB2B!A:O").catch(logFallo("VentasB2B")),
       configSheetId ? readSheet(token, configSheetId, "Salas!A:Z").catch(logFallo("Salas")) : Promise.resolve([]),
       // Promotores trae las columnas salaId_DDmes (cronograma) y pagoFijo (monto de jornada
-      // por promotor, si difiere del default).
-      configSheetId ? readSheet(token, configSheetId, "Promotores!A:Z").catch(logFallo("Promotores")) : Promise.resolve([]),
+      // por promotor, si difiere del default). Rango A:ZZ (no A:Z): cada fecha del cronograma
+      // es una columna nueva, y con A:Z se saturó en la Z (salaId_30ago) -> las fechas de
+      // septiembre en adelante quedaban fuera y se ignoraban en silencio.
+      configSheetId ? readSheet(token, configSheetId, "Promotores!A:ZZ").catch(logFallo("Promotores")) : Promise.resolve([]),
       // Comisiones: tabla Cadena/Producto/Comision -- una fila por producto y cadena, ya
       // que Walmart/Easy/Tottus pueden pagar distinto por el mismo producto.
       configSheetId ? readSheet(token, configSheetId, "Comisiones!A:Z").catch(logFallo("Comisiones")) : Promise.resolve([]),
