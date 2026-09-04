@@ -253,6 +253,15 @@ export const handler = async () => {
       return [...map.values()];
     })();
 
+    // TEMP diagnóstico: estructura real de BBDD TOTTUS (columnas, productos, semanas, muestra)
+    // para configurar comisiones por producto y diseñar la atribución.
+    const tottusDebug = (() => {
+      const rows = toObjects(tottusBbddRows);
+      const productos = [...new Set(rows.map(r => (r["Descripción"] || r["Descripcion"] || "").trim()).filter(Boolean))];
+      const semanas = [...new Set(rows.map(r => `${(r["Año"]||r["Ano"]||"").toString().trim()}-S${(r["Semana"]||"").toString().trim()}`))].filter(x=>x!=="-S");
+      return { columnas: rows[0] ? Object.keys(rows[0]) : [], totalFilas: rows.length, productos, semanas, muestra: rows.slice(0, 3) };
+    })();
+
     return {
       statusCode: 200,
       headers,
@@ -272,6 +281,7 @@ export const handler = async () => {
         retailFuente,
         walmartFuente,
         tottusLocales,
+        tottusDebug,
         updatedAt: new Date().toISOString(),
       }),
     };
