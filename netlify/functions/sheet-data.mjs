@@ -190,7 +190,7 @@ export const handler = async () => {
     // poder cruzar ventas B2B con marcaciones sin depender de un mapeo hardcodeado.
     const configSheetId = process.env.GOOGLE_CONFIG_SHEET_ID;
 
-    const [marcRows, ventasRows, cierresRows, fotosRows, audiosRows, b2bRows, salaRows, promRows, comisionesRows, easyRows, tottusRows, retailRows, diariaWalmartRows] = await Promise.all([
+    const [marcRows, ventasRows, cierresRows, fotosRows, audiosRows, b2bRows, salaRows, promRows, comisionesRows, easyRows, tottusRows, retailRows, diariaWalmartRows, tottusBbddRows] = await Promise.all([
       readSheet(token, sheetId, "Marcaciones!A:L"),
       readSheet(token, sheetId, "Ventas!A:J"),
       readSheet(token, sheetId, "Cierres!A:H"),
@@ -212,6 +212,9 @@ export const handler = async () => {
       fetchVentasRetail(RETAIL_ENDPOINT_URL).catch(err => { console.error("sheet-data: fallo endpoint retail:", err.message); return null; }),
       // Venta DIARIA de Walmart, directo del Sheet del admin retail (compartido con la SA).
       readSheet(token, RETAIL_SHEET_ID, "'BBDD DIARIA WALMART'!A:T").catch(logFallo("BBDD DIARIA WALMART")),
+      // BBDD TOTTUS: se usa para listar las tiendas Tottus (Local + Nro Local) al configurar
+      // las salas de promotoría (los nombres de sala deben calzar con estos "Local").
+      readSheet(token, RETAIL_SHEET_ID, "'BBDD TOTTUS'!A:M").catch(logFallo("BBDD TOTTUS")),
     ]);
 
     // Easy/Tottus: preferimos el endpoint. Solo se atribuye venta de UN día; los bloques
@@ -237,6 +240,17 @@ export const handler = async () => {
     const ventasB2B = diariaWalmart.length ? diariaWalmart : toObjects(b2bRows);
     const walmartFuente = diariaWalmart.length ? "BBDD DIARIA WALMART" : "VentasB2B (fallback)";
 
+    // Tiendas Tottus distintas (Local + Nro Local), para configurar las salas de promotoría.
+    const tottusLocales = (() => {
+      const map = new Map();
+      for (const r of toObjects(tottusBbddRows)) {
+        const local = (r["Local"] || "").trim();
+        if (!local || map.has(local)) continue;
+        map.set(local, { local, nroLocal: (r["Nro Local"] || r["Nro. Local"] || "").trim(), cluster: (r["Cluster"] || "").trim() });
+      }
+      return [...map.values()];
+    })();
+
     return {
       statusCode: 200,
       headers,
@@ -255,6 +269,7 @@ export const handler = async () => {
         ventasRetailNoAtribuibles,
         retailFuente,
         walmartFuente,
+        tottusLocales,
         updatedAt: new Date().toISOString(),
       }),
     };
